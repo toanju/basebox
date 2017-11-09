@@ -57,7 +57,6 @@ NetworkStats::NetworkStats(std::shared_ptr<switch_interface> swi) : swi(swi) {}
     counters->set_out_errors(stats[8] + stats[12]);
     counters->set_out_octets(stats[4]);
     counters->set_out_unicast_pkts(stats[2]);
-
   }
 
   return ::grpc::Status::OK;
