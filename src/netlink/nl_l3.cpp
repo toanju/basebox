@@ -255,6 +255,14 @@ int nl_l3::add_l3_unicast_host(const rofl::caddress_in4 &ipv4_dst,
   return rv;
 }
 
+int nl_l3::add_l3_unicast_route(const rofl::caddress_in4 &ipv4_dst,
+                                const rofl::caddress_in4 &mask,
+                                uint32_t l3_interface_id) const {
+  int rv = 0;
+  rv = sw->l3_unicast_route_add(ipv4_dst, mask, l3_interface_id);
+  return rv;
+}
+
 int nl_l3::add_l3_egress(const uint32_t port_id, const uint16_t vid,
                          const rofl::caddress_ll &dst_mac,
                          const rofl::caddress_ll &src_mac,
@@ -299,17 +307,12 @@ int nl_l3::add_l3_egress(const uint32_t port_id, const uint16_t vid,
   return rv;
 }
 
-int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
+int nl_l3::add_l3_neigh_egress(struct rtnl_neigh *n,
+                               uint32_t *l3_interface_id) {
   int rv;
-  uint32_t l3_interface_id = 0;
-
   assert(n);
-  if (n == nullptr)
-    return -EINVAL;
-
-  VLOG(2) << __FUNCTION__ << ": " << OBJ_CAST(n);
-
   int state = rtnl_neigh_get_state(n);
+
   if (state == NUD_FAILED) {
     LOG(INFO) << __FUNCTION__ << ": neighbour not reachable state=failed";
     return -EINVAL;
@@ -337,9 +340,6 @@ int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
   rtnl_link_put(link);
   link = nullptr;
 
-  addr = rtnl_neigh_get_dst(n);
-  rofl::caddress_in4 ipv4_dst = libnl_in4addr_2_rofl(addr);
-
   // XXX these still have to move to another entity
   rv = port_vid_ingess(ifindex, vid);
   if (rv < 0) {
@@ -356,11 +356,31 @@ int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
     return rv;
   }
 
-  rv = add_l3_egress(port_id, vid, dst_mac, src_mac, &l3_interface_id);
+  rv = add_l3_egress(port_id, vid, dst_mac, src_mac, l3_interface_id);
   if (rv < 0) {
     LOG(ERROR) << __FUNCTION__ << ": failed to add l3 egress";
+  }
+
+  return rv;
+}
+
+int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
+  int rv;
+  uint32_t l3_interface_id = 0;
+  struct nl_addr *addr;
+
+  assert(n);
+  if (n == nullptr)
+    return -EINVAL;
+
+  rv = add_l3_neigh_egress(n, &l3_interface_id);
+  if (rv < 0) {
+    LOG(ERROR) << __FUNCTION__ << ": add l3 neigh egress failed for neigh " << OBJ_CAST(n);
     return rv;
   }
+
+  addr = rtnl_neigh_get_dst(n);
+  rofl::caddress_in4 ipv4_dst = libnl_in4addr_2_rofl(addr);
 
   rv = add_l3_unicast_host(ipv4_dst, l3_interface_id);
   if (rv < 0) {
@@ -610,16 +630,39 @@ int nl_l3::add_l3_route(struct rtnl_route *r) {
         },
         &data);
 
-    if (nnhs == 1) {
+    if (neighs.size()) {
+      uint32_t l3_interface_id = 0;
+      if (nnhs == 1) {
+        // add neigh
+        struct rtnl_neigh *n = neighs.front();
+        rv = add_l3_neigh_egress(n, &l3_interface_id);
+        if (rv < 0) {
+          LOG(ERROR) << __FUNCTION__
+                     << ": add l3 neigh egress failed for neigh "
+                     << OBJ_CAST(n);
+          return rv;
+        }
 
-    } else {
-      // ecmp
-      LOG(WARNING) << __FUNCTION__ << ": ecmp is not supported";
+        // add route
+        rofl::caddress_in4 ipv4_dst;
+        rofl::caddress_in4 mask;
+        rv = add_l3_unicast_route(ipv4_dst, mask, l3_interface_id);
+
+      } else {
+        // ecmp
+        LOG(WARNING) << __FUNCTION__ << ": ecmp is not supported";
+      }
     }
+
+    // clean up neighbours in neighs deqeue
+    for (auto neigh : neighs) {
+      rtnl_neigh_put(neigh);
+    }
+    neighs.clear();
+
   } else {
     LOG(INFO) << __FUNCTION__ << ": no nexthop for this route";
   }
-
 
   struct nl_addr *addr = rtnl_route_get_dst(r);
 

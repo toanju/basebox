@@ -775,6 +775,24 @@ int controller::l3_unicast_host_remove(
   return rv;
 }
 
+int controller::l3_unicast_route_add(const rofl::caddress_in4 &ipv4_dst,
+                                     const rofl::caddress_in4 &mask,
+                                     uint32_t l3_interface) noexcept {
+  int rv = 0;
+  // XXX FIXME implement
+  LOG(FATAL) << __FUNCTION__ << "; not implemented";
+  return rv;
+}
+
+int controller::l3_unicast_route_remove(
+    const rofl::caddress_in4 &ipv4_dst,
+    const rofl::caddress_in4 &mask) noexcept {
+  int rv = 0;
+  // XXX FIXME implement
+  LOG(FATAL) << __FUNCTION__ << "; not implemented";
+  return rv;
+}
+
 int controller::ingress_port_vlan_accept_all(uint32_t port) noexcept {
   int rv = 0;
   try {
