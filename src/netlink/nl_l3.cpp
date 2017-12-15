@@ -201,15 +201,113 @@ int nl_l3::del_l3_termination(struct rtnl_addr *a) {
   return rv;
 }
 
+int nl_l3::port_vid_ingess(int ifindex, uint16_t vid) {
+  int rv = 0;
+  uint32_t port_id = tap_man->get_port_id(ifindex);
+
+  if (port_id == 0) {
+    LOG(ERROR) << __FUNCTION__ << ": invalid port_id=" << port_id;
+    return -EINVAL;
+  }
+
+  // setup ingress interface
+  rv = sw->ingress_port_vlan_add(port_id, vid, true);
+  if (rv < 0) {
+    LOG(ERROR) << __FUNCTION__
+               << ": failed to setup ingress vlan 1 (untagged) on port_id="
+               << port_id << "; rv=" << rv;
+  }
+
+  return rv;
+}
+
+int nl_l3::port_vid_egress(int ifindex, uint16_t vid) {
+  int rv = 0;
+  uint32_t port_id = tap_man->get_port_id(ifindex);
+
+  if (port_id == 0) {
+    LOG(ERROR) << __FUNCTION__ << ": invalid port_id=" << port_id;
+    return -EINVAL;
+  }
+
+  // setup egress interface
+  rv = sw->egress_port_vlan_add(port_id, vid, true);
+
+  if (rv < 0) {
+    LOG(ERROR) << __FUNCTION__
+               << ": failed to setup egress vlan 1 (untagged) on port_id="
+               << port_id << "; rv=" << rv;
+  }
+
+  return rv;
+}
+
+int nl_l3::add_l3_unicast_host(const rofl::caddress_in4 &ipv4_dst,
+                               uint32_t l3_interface_id) const {
+  int rv = 0;
+  rv = sw->l3_unicast_host_add(ipv4_dst, l3_interface_id);
+
+  if (rv < 0) {
+    LOG(ERROR) << __FUNCTION__ << ": failed ipv4_dst=" << ipv4_dst
+               << "l3_interface_id=" << l3_interface_id << "; rv=" << rv;
+  }
+
+  return rv;
+}
+
+int nl_l3::add_l3_egress(const uint32_t port_id, const uint16_t vid,
+                         const rofl::caddress_ll &dst_mac,
+                         const rofl::caddress_ll &src_mac,
+                         uint32_t *l3_interface_id) {
+  int rv = 0;
+
+  // setup egress L3 Unicast group
+  uint32_t _l3_interface_id = 0;
+  auto it = l3_interface_mapping.find(
+      std::make_tuple(port_id, vid, src_mac, dst_mac));
+
+  if (it == l3_interface_mapping.end()) {
+    rv =
+        sw->l3_egress_create(port_id, vid, src_mac, dst_mac, &_l3_interface_id);
+
+    if (rv < 0) {
+      LOG(ERROR) << __FUNCTION__
+                 << ": failed to setup l3 egress port_id=" << port_id
+                 << ", vid=" << vid << ", src_mac=" << src_mac
+                 << ", dst_mac=" << dst_mac << "; rv=" << rv;
+      return rv;
+    }
+
+    auto rv = l3_interface_mapping.emplace(
+        std::make_pair(std::make_tuple(port_id, vid, src_mac, dst_mac),
+                       l3_interface(_l3_interface_id)));
+
+    if (!rv.second) {
+      LOG(FATAL) << __FUNCTION__
+                 << ": failed to store l3_interface_id port_id=" << port_id
+                 << ", vid=" << vid << ", src_mac=" << src_mac
+                 << ", dst_mac=" << dst_mac;
+    }
+  } else {
+    assert(it->second.l3_interface_id);
+    _l3_interface_id = it->second.l3_interface_id;
+    it->second.refcnt++;
+  }
+
+  *l3_interface_id = _l3_interface_id;
+
+  return rv;
+}
+
 int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
   int rv;
+  uint32_t l3_interface_id = 0;
 
   assert(n);
-
   if (n == nullptr)
     return -EINVAL;
 
-  LOG(INFO) << __FUNCTION__ << ": n=" << n;
+  VLOG(2) << __FUNCTION__ << ": " << OBJ_CAST(n);
 
   int state = rtnl_neigh_get_state(n);
   if (state == NUD_FAILED) {
@@ -218,7 +316,6 @@ int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
   }
 
   int vid = 1; // XXX TODO currently only on vid 1
-  assert(vid);
   struct nl_addr *addr = rtnl_neigh_get_lladdr(n);
   rofl::caddress_ll dst_mac = libnl_lladdr_2_rofl(addr);
   int ifindex = rtnl_neigh_get_ifindex(n);
@@ -229,8 +326,8 @@ int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
     return -EINVAL;
   }
 
-  assert(nl);
-  struct rtnl_link *link = nl->get_link_by_ifindex(ifindex);
+  struct rtnl_link *link =
+      nl->get_link_by_ifindex(ifindex);
 
   if (link == nullptr)
     return -EINVAL;
@@ -243,72 +340,35 @@ int nl_l3::add_l3_neigh(struct rtnl_neigh *n) {
   addr = rtnl_neigh_get_dst(n);
   rofl::caddress_in4 ipv4_dst = libnl_in4addr_2_rofl(addr);
 
-  // setup ingress interface
-  // XXX TODO this has to be handled by a different entity
-  rv = sw->ingress_port_vlan_add(port_id, 1, true);
+  // XXX these still have to move to another entity
+  rv = port_vid_ingess(ifindex, vid);
   if (rv < 0) {
-    LOG(ERROR) << __FUNCTION__
-               << ": failed to setup ingress vlan 1 (untagged) on port_id="
-               << port_id << "; rv=" << rv;
+    LOG(ERROR) << __FUNCTION__ << ": failed to setup vid ingress vid=" << vid
+               << "on link " << OBJ_CAST(link);
     return rv;
   }
 
-  // setup egress interface
-  // XXX TODO this has to be handled by a different entity
-  rv = sw->egress_port_vlan_add(port_id, 1, true);
-
+  rv = port_vid_egress(ifindex, vid);
   if (rv < 0) {
-    LOG(ERROR) << __FUNCTION__
-               << ": failed to setup egress vlan 1 (untagged) on port_id="
-               << port_id << "; rv=" << rv;
-    (void)sw->ingress_port_vlan_remove(port_id, 1, true);
+    LOG(ERROR) << __FUNCTION__ << ": failed to setup vid egress vid=" << vid
+               << "on link " << OBJ_CAST(link);
+
     return rv;
   }
 
-  // setup egress L3 Unicast group
-  uint32_t l3_interface_id = 0;
-  auto it = l3_interface_mapping.find(
-      std::make_tuple(port_id, vid, src_mac, dst_mac));
-
-  if (it == l3_interface_mapping.end()) {
-    rv = sw->l3_egress_create(port_id, vid, src_mac, dst_mac, &l3_interface_id);
-
-    if (rv < 0) {
-      LOG(ERROR) << __FUNCTION__
-                 << ": failed to setup l3 egress port_id=" << port_id
-                 << ", vid=" << vid << ", src_mac=" << src_mac
-                 << ", dst_mac=" << dst_mac << "; rv=" << rv;
-      return rv;
-    }
-
-    auto rv = l3_interface_mapping.emplace(
-        std::make_pair(std::make_tuple(port_id, vid, src_mac, dst_mac),
-                       l3_interface(l3_interface_id)));
-
-    if (!rv.second) {
-      LOG(FATAL) << __FUNCTION__
-                 << ": failed to store l3_interface_id port_id=" << port_id
-                 << ", vid=" << vid << ", src_mac=" << src_mac
-                 << ", dst_mac=" << dst_mac;
-    }
-  } else {
-    assert(it->second.l3_interface_id);
-    l3_interface_id = it->second.l3_interface_id;
-    it->second.refcnt++;
-  }
-
-  // setup next hop
-  rv = sw->l3_unicast_host_add(ipv4_dst, l3_interface_id);
-
+  rv = add_l3_egress(port_id, vid, dst_mac, src_mac, &l3_interface_id);
   if (rv < 0) {
-    LOG(ERROR) << __FUNCTION__
-               << ": failed to setup l3 neigh port_id=" << port_id
-               << ", vid=" << vid << ", l3_interface_id=" << l3_interface_id
-               << "; rv=" << rv;
+    LOG(ERROR) << __FUNCTION__ << ": failed to add l3 egress";
     return rv;
   }
 
-  return 0;
+  rv = add_l3_unicast_host(ipv4_dst, l3_interface_id);
+  if (rv < 0) {
+    LOG(ERROR) << __FUNCTION__ << ": add l3 unicast host failed for "
+               << OBJ_CAST(n);
+  }
+
+  return rv;
 }
 
 int nl_l3::update_l3_neigh(struct rtnl_neigh *n_old, struct rtnl_neigh *n_new) {

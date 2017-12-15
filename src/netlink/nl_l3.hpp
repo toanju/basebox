@@ -7,11 +7,18 @@
 #include <cstdint>
 #include <memory>
 
+extern "C" {
 struct nl_addr;
 struct rtnl_addr;
 struct rtnl_neigh;
 struct rtnl_route;
 struct rtnl_nexthop;
+}
+
+namespace rofl {
+class caddress_ll;
+class caddress_in4;
+}
 
 namespace basebox {
 
@@ -41,6 +48,16 @@ public:
   void register_switch_interface(switch_interface *sw);
 
 private:
+  int add_l3_egress(const uint32_t port_id, const uint16_t vid,
+                    const rofl::caddress_ll &dst_mac,
+                    const rofl::caddress_ll &src_mac,
+                    uint32_t *l3_interface_id);
+  int add_l3_unicast_host(const rofl::caddress_in4 &ipv4_dst,
+                          uint32_t l3_interface_id) const;
+
+  int port_vid_ingess(int ifindex, uint16_t vid = 1);
+  int port_vid_egress(int ifindex, uint16_t vid = 1);
+
   struct rtnl_neigh *nexthop_resolution(struct rtnl_nexthop *nh, void *arg);
 
   switch_interface *sw;
