@@ -777,9 +777,34 @@ int controller::l3_unicast_host_remove(
 
 int controller::l3_unicast_route_add(const rofl::caddress_in4 &ipv4_dst,
                                      const rofl::caddress_in4 &mask,
-                                     uint32_t l3_interface) noexcept {
+                                     uint32_t l3_interface_id) noexcept {
   int rv = 0;
-  // XXX FIXME implement
+
+  if (l3_interface_id > 0x0fffffff)
+    return -EINVAL;
+
+  try {
+    rofl::crofdpt &dpt = set_dpt(dptid, true);
+
+    if (l3_interface_id)
+      l3_interface_id = fm_driver.group_id_l3_unicast(l3_interface_id);
+
+    dpt.send_flow_mod_message(
+        rofl::cauxid(0),
+        fm_driver.enable_ipv4_unicast_host(dpt.get_version(), ipv4_dst,
+                                           l3_interface_id));
+  } catch (rofl::eRofBaseNotFound &e) {
+    LOG(ERROR) << ": caught rofl::eRofBaseNotFound";
+    rv = -EINVAL;
+  } catch (rofl::eRofConnNotConnected &e) {
+    LOG(ERROR) << ": not connected msg=" << e.what();
+    rv = -ENOTCONN;
+  } catch (std::exception &e) {
+    LOG(ERROR) << ": caught unknown exception: " << e.what();
+    rv = -EINVAL;
+  }
+
+  return rv;
   LOG(FATAL) << __FUNCTION__ << "; not implemented";
   return rv;
 }
@@ -788,8 +813,25 @@ int controller::l3_unicast_route_remove(
     const rofl::caddress_in4 &ipv4_dst,
     const rofl::caddress_in4 &mask) noexcept {
   int rv = 0;
-  // XXX FIXME implement
-  LOG(FATAL) << __FUNCTION__ << "; not implemented";
+
+  try {
+    rofl::crofdpt &dpt = set_dpt(dptid, true);
+
+    dpt.send_flow_mod_message(
+        rofl::cauxid(0),
+        fm_driver.disable_ipv4_unicast_lpm(dpt.get_version(), ipv4_dst, mask));
+    dpt.send_barrier_request(rofl::cauxid(0));
+  } catch (rofl::eRofBaseNotFound &e) {
+    LOG(ERROR) << ": caught rofl::eRofBaseNotFound";
+    rv = -EINVAL;
+  } catch (rofl::eRofConnNotConnected &e) {
+    LOG(ERROR) << ": not connected msg=" << e.what();
+    rv = -ENOTCONN;
+  } catch (std::exception &e) {
+    LOG(ERROR) << ": caught unknown exception: " << e.what();
+    rv = -EINVAL;
+  }
+
   return rv;
 }
 
