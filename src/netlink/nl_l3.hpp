@@ -7,9 +7,9 @@
 #include <cstdint>
 #include <memory>
 
+struct nl_addr;
 struct rtnl_addr;
 struct rtnl_neigh;
-struct nl_addr;
 struct rtnl_route;
 struct rtnl_nexthop;
 
@@ -34,6 +34,9 @@ public:
 
   int del_l3_egress(int ifindex, const struct nl_addr *s_mac,
                     const struct nl_addr *d_mac);
+
+  int add_l3_route(struct rtnl_route *r);
+  int del_l3_route(struct rtnl_route *r);
 
   void register_switch_interface(switch_interface *sw);
 

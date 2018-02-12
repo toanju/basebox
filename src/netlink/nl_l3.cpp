@@ -521,4 +521,61 @@ struct rtnl_neigh *nl_l3::nexthop_resolution(struct rtnl_nexthop *nh,
   return neigh;
 }
 
+int nl_l3::add_l3_route(struct rtnl_route *r) {
+  int rv = 0;
+  int nnhs = rtnl_route_get_nnexthops(r);
+  struct nl_list_head *nh_list = rtnl_route_get_nexthops(r);
+  std::deque<struct rtnl_neigh *> neighs;
+
+  LOG(INFO) << __FUNCTION__ << ": nnhs=" << nnhs;
+
+  if (nh_list) {
+    std::pair<nl_l3 *, std::deque<struct rtnl_neigh *> *> data =
+        std::make_pair(this, &neighs);
+    rtnl_route_foreach_nexthop(
+        r,
+        [](struct rtnl_nexthop *nh, void *arg) {
+          std::pair<nl_l3 *, std::deque<struct rtnl_neigh *> *> *data =
+              static_cast<
+                  std::pair<nl_l3 *, std::deque<struct rtnl_neigh *> *> *>(arg);
+          std::deque<struct rtnl_neigh *> *neighs = data->second;
+
+          struct rtnl_neigh *neigh =
+              static_cast<nl_l3 *>(arg)->nexthop_resolution(nh, nullptr);
+          if (neigh) {
+            LOG(INFO) << __FUNCTION__ << "; found neighbour: "
+                      << reinterpret_cast<struct nl_object *>(neigh);
+            neighs->push_back(neigh);
+          }
+        },
+        &data);
+
+    if (nnhs == 1) {
+
+    } else {
+      // ecmp
+      LOG(WARNING) << __FUNCTION__ << ": ecmp is not supported";
+    }
+  } else {
+    LOG(INFO) << __FUNCTION__ << ": no nexthop for this route";
+  }
+
+
+  struct nl_addr *addr = rtnl_route_get_dst(r);
+
+  if (addr) {
+    LOG(INFO) << __FUNCTION__ << ": dst=" << addr;
+  } else {
+    LOG(INFO) << __FUNCTION__ << ": dst not set";
+  }
+
+  return rv;
+}
+
+int nl_l3::del_l3_route(struct rtnl_route *r) {
+  int rv = 0;
+  LOG(FATAL) << __FUNCTION__ << ": not implemented";
+  return rv;
+}
+
 } // namespace basebox
