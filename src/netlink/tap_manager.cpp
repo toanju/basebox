@@ -50,13 +50,15 @@ void tap_io::enqueue(int fd, basebox::packet *pkt) {
 }
 
 void tap_io::handle_read_event(rofl::cthread &thread, int fd) {
-  basebox::packet *pkt =
-      (basebox::packet *)std::malloc(sizeof(basebox::packet));
+  basebox::packet *pkt = (basebox::packet *)std::malloc(sizeof(std::size_t) +
+                                                        1528); // TODO use mtu
 
-  if (pkt == nullptr)
+  if (pkt == nullptr) {
+    LOG(ERROR) << __FUNCTION__ << ": no mem left";
     return;
+  }
 
-  pkt->len = read(fd, pkt->data, basebox::packet_data_len);
+  pkt->len = read(fd, pkt->data, 1528);
 
   if (pkt->len > 0) {
     VLOG(3) << __FUNCTION__ << ": read " << pkt->len << " bytes from fd=" << fd
