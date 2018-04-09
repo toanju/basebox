@@ -13,16 +13,19 @@
 #include <netlink/route/addr.h>
 #include <netlink/route/link.h>
 #include <netlink/route/link/vlan.h>
+#include <netlink/route/link/vxlan.h>
 #include <netlink/route/neighbour.h>
 #include <netlink/route/route.h>
 
 #include "cnetlink.hpp"
 #include "netlink-utils.hpp"
 #include "nl_output.hpp"
+#include "nl_route_query.hpp"
 #include "tap_manager.hpp"
 
 #include "nl_l3.hpp"
 #include "nl_vlan.hpp"
+#include "nl_vxlan.hpp"
 
 namespace basebox {
 
@@ -30,7 +33,8 @@ cnetlink::cnetlink(std::shared_ptr<tap_manager> tap_man)
     : swi(nullptr), thread(this), caches(NL_MAX_CACHE, nullptr),
       tap_man(tap_man), bridge(nullptr), nl_proc_max(10), running(false),
       rfd_scheduled(false), vlan(new nl_vlan(this)),
-      l3(new nl_l3(tap_man, vlan, this)) {
+      l3(new nl_l3(tap_man, vlan, this)),
+      vxlan(new nl_vxlan(tap_man, l3, this)) {
 
   sock = nl_socket_alloc();
   if (NULL == sock) {
@@ -160,6 +164,49 @@ struct rtnl_link *cnetlink::get_link(int ifindex, int family) const {
                           &_link);
 
   return _link;
+}
+
+struct rtnl_neigh *cnetlink::get_neighbour(int ifindex,
+                                           struct nl_addr *a) const {
+  assert(ifindex);
+  assert(a);
+  return rtnl_neigh_get(caches[NL_NEIGH_CACHE], ifindex, a);
+}
+
+bool cnetlink::is_bridge_interface(rtnl_link *l) const {
+
+  // is a vlan on top of the bridge?
+  if (rtnl_link_is_vlan(l)) {
+    LOG(INFO) << __FUNCTION__ << ": vlan ok";
+
+    // get the master and check if it's a bridge
+    auto _l = get_link_by_ifindex(rtnl_link_get_link(l));
+
+    if (_l == nullptr)
+      return false;
+
+    auto lt = kind_to_link_type(rtnl_link_get_type(_l));
+
+    LOG(INFO) << __FUNCTION__ << ": lt=" << lt << " " << OBJ_CAST(_l);
+    if (lt == LT_BRIDGE) {
+      LOG(INFO) << __FUNCTION__ << ": vlan ok";
+
+      std::deque<rtnl_link *> bridge_interfaces;
+      get_bridge_ports(rtnl_link_get_ifindex(_l), caches[NL_LINK_CACHE],
+                       &bridge_interfaces);
+
+      for (auto br_intf : bridge_interfaces) {
+        if (tap_man->get_port_id(rtnl_link_get_ifindex(br_intf)) != 0)
+          return true;
+      }
+    }
+
+    // XXX TODO check rather nl_bridge ?
+  }
+
+  // TODO could the interface be a bridge slave as well?
+
+  return false;
 }
 
 int cnetlink::get_port_id(rtnl_link *l) const {
@@ -564,7 +611,7 @@ void cnetlink::route_route_apply(const nl_obj &obj) {
 
     switch (family = rtnl_route_get_family(ROUTE_CAST(obj.get_new_obj()))) {
     case AF_INET:
-      VLOG(2) << __FUNCTION__ << ": new IPv4 route (not supported)";
+      l3->add_l3_route(ROUTE_CAST(obj.get_new_obj()));
       break;
     case AF_INET6:
       VLOG(2) << __FUNCTION__ << ": new IPv6 route (not supported)";
@@ -602,6 +649,7 @@ void cnetlink::route_route_apply(const nl_obj &obj) {
 
     switch (family = rtnl_route_get_family(ROUTE_CAST(obj.get_old_obj()))) {
     case AF_INET:
+      // XXX TODO l3.del_l3_route(ROUTE_CAST(obj.get_old_obj()));
       VLOG(2) << __FUNCTION__ << ": changed IPv4 route (not supported)";
       break;
     case AF_INET6:
@@ -647,7 +695,7 @@ void cnetlink::link_created(rtnl_link *link) noexcept {
         if (nullptr == bridge) {
           LOG(INFO) << __FUNCTION__ << ": using bridge "
                     << rtnl_link_get_master(link);
-          bridge = new nl_bridge(this->swi, tap_man, this);
+          bridge = new nl_bridge(this->swi, tap_man, this, vxlan);
           rtnl_link *br_link =
               rtnl_link_get(caches[NL_LINK_CACHE], rtnl_link_get_master(link));
           bridge->set_bridge_interface(br_link);
@@ -663,8 +711,17 @@ void cnetlink::link_created(rtnl_link *link) noexcept {
       LOG(WARNING) << __FUNCTION__ << ": ignoring link with af=" << af
                    << " link:" << link;
       break;
-    } // switch familiy
+    } // LT_UNKNOWN, switch family
     break;
+  case LT_VXLAN: {
+    uint32_t tunnel_id;
+    int rv = vxlan->create_vni(link, &tunnel_id);
+
+    if (rv < 0)
+      break;
+
+    vxlan->create_endpoint(link, tunnel_id);
+  } break;
   case LT_TUN: {
     int ifindex = rtnl_link_get_ifindex(link);
     std::string name(rtnl_link_get_name(link));
@@ -770,6 +827,14 @@ void cnetlink::link_deleted(rtnl_link *link) noexcept {
   case LT_TUN:
     tap_man->tap_dev_removed(rtnl_link_get_ifindex(link));
     break;
+  case LT_VXLAN: {
+    // XXX FIXME delete everything else before?
+    int rv = vxlan->remove_vni(link);
+
+    if (rv < 0)
+      break;
+
+  } break;
   case LT_VLAN: {
     VLOG(1) << __FUNCTION__ << ": removed vlan interface " << OBJ_CAST(link);
     uint16_t vid = rtnl_link_vlan_get_id(link);
@@ -794,6 +859,7 @@ void cnetlink::neigh_ll_created(rtnl_neigh *neigh) noexcept {
   }
 
   rtnl_link *base_link = get_link(ifindex, AF_UNSPEC); // either tap, vxlan, ...
+  rtnl_link *br_link = get_link(ifindex, AF_BRIDGE);
 
   if (base_link == nullptr) {
     LOG(ERROR) << __FUNCTION__
@@ -809,13 +875,17 @@ void cnetlink::neigh_ll_created(rtnl_neigh *neigh) noexcept {
     return;
   }
 
-  // XXX TODO maybe we have to do this as well wrt. local bridging
-  // normal bridging
-  try {
-    bridge->add_neigh_to_fdb(neigh);
-  } catch (std::exception &e) {
-    LOG(ERROR) << __FUNCTION__
-               << ": failed to add mac to fdb"; // TODO log mac, port,...?
+  if (vxlan->add_l2_neigh(neigh, base_link, br_link) == 0) {
+    // vxlan domain
+  } else {
+    // XXX TODO maybe we have to do this as well wrt. local bridging
+    // normal bridging
+    try {
+      bridge->add_neigh_to_fdb(neigh);
+    } catch (std::exception &e) {
+      LOG(ERROR) << __FUNCTION__
+                 << ": failed to add mac to fdb"; // TODO log mac, port,...?
+    }
   }
 }
 
@@ -850,7 +920,11 @@ void cnetlink::neigh_ll_deleted(rtnl_neigh *neigh) noexcept {
     return;
   }
 
-  bridge->remove_mac_from_fdb(neigh);
+  if (vxlan->delete_l2_neigh(neigh, l) == 0) {
+    // vxlan domain
+  } else {
+    bridge->remove_mac_from_fdb(neigh);
+  }
 }
 
 void cnetlink::resend_state() noexcept {
@@ -863,6 +937,9 @@ void cnetlink::register_switch(switch_interface *swi) noexcept {
   this->swi = swi;
   l3->register_switch_interface(swi);
   vlan->register_switch_interface(swi);
+  vxlan->register_switch_interface(swi);
+
+  swi->subscribe_to(switch_interface::SWIF_ARP);
 }
 
 void cnetlink::unregister_switch(switch_interface *swi) noexcept {

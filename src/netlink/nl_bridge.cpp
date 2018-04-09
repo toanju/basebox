@@ -8,22 +8,24 @@
 
 #include <glog/logging.h>
 #include <netlink/route/link.h>
-#include <netlink/route/link/bridge.h>
+#include <netlink/route/link/vxlan.h>
 #include <netlink/route/neighbour.h>
 #include <rofl/common/openflow/cofport.h>
 
 #include "cnetlink.hpp"
 #include "nl_bridge.hpp"
 #include "nl_output.hpp"
+#include "nl_vxlan.hpp"
 #include "sai.hpp"
 #include "tap_manager.hpp"
 
 namespace basebox {
 
 nl_bridge::nl_bridge(switch_interface *sw, std::shared_ptr<tap_manager> tap_man,
-                     cnetlink *nl)
-    : bridge(nullptr), sw(sw), tap_man(tap_man), nl(nl) {
+                     cnetlink *nl, std::shared_ptr<nl_vxlan> vxlan)
+    : bridge(nullptr), sw(sw), tap_man(tap_man), nl(nl), vxlan(vxlan) {
   memset(&empty_br_vlan, 0, sizeof(rtnl_link_bridge_vlan));
+  memset(&vxlan_dom_bitmap, 0, sizeof(vxlan_dom_bitmap));
 }
 
 nl_bridge::~nl_bridge() { rtnl_link_put(bridge); }
@@ -42,6 +44,25 @@ static bool br_vlan_equal(const rtnl_link_bridge_vlan *lhs,
   assert(lhs);
   assert(rhs);
   return (memcmp(lhs, rhs, sizeof(struct rtnl_link_bridge_vlan)) == 0);
+}
+
+static bool is_vid_set(unsigned vid, uint32_t *addr) {
+  if (vid >= RTNL_LINK_BRIDGE_VLAN_BITMAP_MAX) {
+    LOG(FATAL) << __FUNCTION__ << ": vid " << vid << " out of range";
+    return false;
+  }
+
+  return !!(addr[vid / 32] & (((uint32_t)1) << (vid % 32)));
+}
+
+static void set_vid(unsigned vid, uint32_t *addr) {
+  if (vid < RTNL_LINK_BRIDGE_VLAN_BITMAP_MAX)
+    addr[vid / 32] |= (((uint32_t)1) << (vid % 32));
+}
+
+static void unset_vid(unsigned vid, uint32_t *addr) {
+  if (vid < RTNL_LINK_BRIDGE_VLAN_BITMAP_MAX)
+    addr[vid / 32] &= ~(((uint32_t)1) << (vid % 32));
 }
 
 static int find_next_bit(int i, uint32_t x) {
@@ -175,14 +196,28 @@ void nl_bridge::update_vlans(rtnl_link *old_link, rtnl_link *new_link) {
     VLOG(1) << __FUNCTION__ << ": no link type";
   }
 
+  link_type lt = kind_to_link_type(type);
   uint32_t pport_no = 0;
+  uint32_t tunnel_id = -1;
   std::deque<rtnl_link *> bridge_ports;
 
-  pport_no = tap_man->get_port_id(rtnl_link_get_ifindex(_link));
-  if (pport_no == 0) {
-    LOG(ERROR) << __FUNCTION__ << ": invalid port "
-               << static_cast<void *>(_link);
-    return;
+  if (lt == LT_VXLAN) {
+    ::basebox::get_bridge_ports(rtnl_link_get_master(_link),
+                                nl->get_cache(cnetlink::NL_LINK_CACHE),
+                                &bridge_ports);
+
+    if (vxlan->get_tunnel_id(_link, &tunnel_id) != 0) {
+      LOG(ERROR) << __FUNCTION__ << ": failed to get vni of link "
+                 << OBJ_CAST(_link);
+    }
+
+  } else {
+    pport_no = tap_man->get_port_id(rtnl_link_get_ifindex(_link));
+    if (pport_no == 0) {
+      LOG(ERROR) << __FUNCTION__ << ": invalid port "
+                 << static_cast<void *>(_link);
+      return;
+    }
   }
 
   for (int k = 0; k < RTNL_LINK_BRIDGE_VLAN_BITMAP_LEN; k++) {
@@ -219,19 +254,60 @@ void nl_bridge::update_vlans(rtnl_link *old_link, rtnl_link *new_link) {
 
         if (new_br_vlan->vlan_bitmap[k] & 1 << (j - 1)) {
           // vlan added
-          assert(pport_no);
-          // normal vlan port
-          sw->egress_bridge_port_vlan_add(pport_no, vid, egress_untagged);
-          sw->ingress_port_vlan_add(pport_no, vid, new_br_vlan->pvid == vid);
+          if (lt == LT_VXLAN) {
+            // update vxlan domain
+            if (!is_vid_set(vid, vxlan_dom_bitmap)) {
+              VLOG(1) << __FUNCTION__ << ": new vxlan domain vid=" << vid
+                      << ", tunnel_id=" << tunnel_id;
 
+              vxlan_domain.emplace(vid, tunnel_id);
+              set_vid(vid, vxlan_dom_bitmap);
+            } else {
+              // XXX TODO check the map
+            }
+
+            // update all bridge ports to be access ports
+            update_access_ports(rtnl_link_get_ifindex(_link), vid, tunnel_id,
+                                bridge_ports, true);
+          } else {
+            assert(pport_no);
+            if (is_vid_set(vid, vxlan_dom_bitmap)) {
+              // configure as access port
+              std::string port_name = std::string(rtnl_link_get_name(_link));
+              auto vxd_it = vxlan_domain.find(vid);
+
+              if (vxd_it != vxlan_domain.end()) {
+                vxlan->create_access_port((new_link) ? new_link : old_link,
+                                          vxd_it->second, port_name, pport_no,
+                                          vid, egress_untagged, nullptr);
+              } else {
+                LOG(FATAL) << __FUNCTION__
+                           << ": should not happen, something is broken";
+              }
+            } else {
+              // normal vlan port
+              sw->egress_bridge_port_vlan_add(pport_no, vid, egress_untagged);
+              sw->ingress_port_vlan_add(pport_no, vid,
+                                        new_br_vlan->pvid == vid);
+            }
+          }
         } else {
           // vlan removed
+          if (lt == LT_VXLAN) {
+            unset_vid(vid, vxlan_dom_bitmap);
+            vxlan_domain.erase(vid);
 
-          sw->ingress_port_vlan_remove(pport_no, vid, old_br_vlan->pvid == vid);
+            // update all bridge ports to be normal bridge ports
+            update_access_ports(rtnl_link_get_ifindex(_link), vid, tunnel_id,
+                                bridge_ports, false);
+          } else {
+            sw->ingress_port_vlan_remove(pport_no, vid,
+                                         old_br_vlan->pvid == vid);
 
-          // delete all FM pointing to this group first
-          sw->l2_addr_remove_all_in_vlan(pport_no, vid);
-          sw->egress_bridge_port_vlan_remove(pport_no, vid);
+            // delete all FM pointing to this group first
+            sw->l2_addr_remove_all_in_vlan(pport_no, vid);
+            sw->egress_bridge_port_vlan_remove(pport_no, vid);
+          }
         }
 
         i = j;
@@ -266,6 +342,57 @@ void nl_bridge::update_vlans(rtnl_link *old_link, rtnl_link *new_link) {
 			}
 		}
 #endif
+  }
+}
+
+void nl_bridge::update_access_ports(const int ifindex_vxlan, const uint16_t vid,
+                                    const uint32_t tunnel_id,
+                                    const std::deque<rtnl_link *> &bridge_ports,
+                                    bool add) {
+  // XXX pvid is currently not taken into account
+  for (auto _br_port : bridge_ports) {
+    auto br_port_vlans = rtnl_link_bridge_get_port_vlan(_br_port);
+
+    if (ifindex_vxlan == rtnl_link_get_ifindex(_br_port))
+      continue;
+
+    if (br_port_vlans == nullptr)
+      continue;
+
+    if (!is_vid_set(vid, br_port_vlans->vlan_bitmap))
+      continue;
+
+    bool untagged = is_vid_set(vid, br_port_vlans->untagged_bitmap);
+
+    VLOG(2) << __FUNCTION__ << ": vid=" << vid << ", untagged=" << untagged
+            << ", tunnel_id=" << tunnel_id << ", add=" << add
+            << ", port: " << OBJ_CAST(_br_port);
+
+    int ifindex = rtnl_link_get_ifindex(_br_port);
+    uint32_t pport_no = tap_man->get_port_id(ifindex);
+
+    if (pport_no == 0) {
+      LOG(WARNING) << __FUNCTION__ << ": ignoring unknown port "
+                   << OBJ_CAST(_br_port);
+      continue;
+    }
+
+    if (add) {
+      std::string port_name = std::string(rtnl_link_get_name(_br_port));
+
+      // this is no longer a normal bridge interface thus we delete all the
+      // bridging entries
+      sw->l2_addr_remove_all_in_vlan(pport_no, vid);
+      vxlan->create_access_port(_br_port, tunnel_id, port_name, pport_no, vid,
+                                untagged, nullptr);
+
+      // XXX FIXME check all ll entries at this bridge port and set them again
+      // with lport destiation
+    } else {
+      // delte access port and all bridging entries
+      vxlan->delete_access_port(pport_no, vid, true);
+      // XXX FIXME check if we have to add the VLANs again (ingress/egress)
+    }
   }
 }
 

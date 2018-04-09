@@ -35,10 +35,11 @@ public:
 // forward declaration
 class nl_l3;
 class nl_vlan;
+class nl_vxlan;
 class tap_manager;
 
 class cnetlink final : public rofl::cthread_env {
-
+public:
   enum nl_cache_t {
     NL_ADDR_CACHE,
     NL_LINK_CACHE,
@@ -47,7 +48,6 @@ class cnetlink final : public rofl::cthread_env {
     NL_MAX_CACHE,
   };
 
-public:
   cnetlink(std::shared_ptr<tap_manager> tap_man);
   ~cnetlink() override;
 
@@ -56,7 +56,12 @@ public:
    */
   struct rtnl_link *get_link_by_ifindex(int ifindex) const;
   struct rtnl_link *get_link(int ifindex, int family) const;
+  struct rtnl_neigh *get_neighbour(int ifindex, struct nl_addr *a) const;
+
+  bool is_bridge_interface(rtnl_link *l) const;
   int get_port_id(rtnl_link *l) const;
+
+  nl_cache *get_cache(enum nl_cache_t id) { return caches[id]; }
 
   void resend_state() noexcept;
 
@@ -111,6 +116,7 @@ private:
 
   std::shared_ptr<nl_vlan> vlan;
   std::shared_ptr<nl_l3> l3;
+  std::shared_ptr<nl_vxlan> vxlan;
 
   void route_addr_apply(const nl_obj &obj);
   void route_link_apply(const nl_obj &obj);

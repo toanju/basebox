@@ -25,9 +25,15 @@ enum link_type {
   LT_BRIDGE,
   LT_TUN,
   LT_VLAN,
+  LT_VXLAN,
   LT_MAX /* must be last */
 };
 
 enum link_type kind_to_link_type(const char *type) noexcept;
+
+uint64_t nlall2uint64(const nl_addr *a) noexcept;
+
+void get_bridge_ports(int br_ifindex, struct nl_cache *link_cache,
+                      std::deque<rtnl_link *> *list) noexcept;
 
 } // namespace basebox

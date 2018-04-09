@@ -53,15 +53,18 @@ SOURCES_NETLINK = \
 	netlink/nl_obj.hpp \
 	netlink/nl_output.cpp \
 	netlink/nl_output.hpp \
+	netlink/nl_route_query.hpp \
 	netlink/nl_vlan.cpp \
 	netlink/nl_vlan.hpp  \
+	netlink/nl_vxlan.cpp \
+	netlink/nl_vxlan.hpp \
 	netlink/tap_manager.cpp \
 	netlink/tap_manager.hpp
 
 nodist_baseboxd_SOURCES = \
 	$(PROTO_SOURCES) \
 	$(GRPC_SOURCES)
-		
+
 basebox_grpc_SOURCES = \
 	basebox_grpc_statistics.cc \
 	basebox_grpc_statistics.h \
@@ -76,7 +79,7 @@ baseboxd_SOURCES = \
 	utils.hpp \
 	$(basebox_grpc_SOURCES) \
 	$(SOURCES_NETLINK)
-	
+
 baseboxd_LDADD = \
 	of-dpa/libbb_ofdpa.la \
 	${LIBNL3_LIBS} \
@@ -84,6 +87,6 @@ baseboxd_LDADD = \
 	-lrt
 
 AM_CPPFLAGS = -I$(top_srcdir)/src
-AM_LDFLAGS = 
+AM_LDFLAGS =
 
 MAINTAINERCLEANFILES = Makefile.in
