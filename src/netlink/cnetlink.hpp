@@ -34,6 +34,7 @@ public:
 
 // forward declaration
 class nl_l3;
+class nl_vlan;
 class tap_manager;
 
 class cnetlink final : public rofl::cthread_env {
@@ -55,6 +56,7 @@ public:
    */
   struct rtnl_link *get_link_by_ifindex(int ifindex) const;
   struct rtnl_link *get_link(int ifindex, int family) const;
+  int get_port_id(rtnl_link *l) const;
 
   void resend_state() noexcept;
 
@@ -107,6 +109,7 @@ private:
   bool rfd_scheduled;
   std::deque<nl_obj> nl_objs;
 
+  std::shared_ptr<nl_vlan> vlan;
   std::shared_ptr<nl_l3> l3;
 
   void route_addr_apply(const nl_obj &obj);
