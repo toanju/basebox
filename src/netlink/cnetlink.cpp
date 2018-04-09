@@ -631,7 +631,7 @@ void cnetlink::link_created(rtnl_link *link) noexcept {
         if (nullptr == bridge) {
           LOG(INFO) << __FUNCTION__ << ": using bridge "
                     << rtnl_link_get_master(link);
-          bridge = new nl_bridge(this->swi, tap_man);
+          bridge = new nl_bridge(this->swi, tap_man, this);
           rtnl_link *br_link =
               rtnl_link_get(caches[NL_LINK_CACHE], rtnl_link_get_master(link));
           bridge->set_bridge_interface(br_link);
