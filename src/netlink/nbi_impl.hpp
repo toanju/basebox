@@ -11,12 +11,12 @@ class cnetlink;
 class tap_manager;
 
 class nbi_impl : public nbi, public switch_callback {
-  std::shared_ptr<tap_manager> tap_man;
   switch_interface *swi;
   std::unique_ptr<cnetlink> nl;
+  std::shared_ptr<tap_manager> tap_man;
 
 public:
-  nbi_impl(std::shared_ptr<tap_manager> tap_man);
+  nbi_impl();
   virtual ~nbi_impl();
 
   // nbi
@@ -29,6 +29,8 @@ public:
 
   // tap_callback
   int enqueue_to_switch(uint32_t port_id, struct basebox::packet *) override;
+
+  std::shared_ptr<tap_manager> get_tapmanager() { return tap_man; }
 };
 
 } // namespace basebox

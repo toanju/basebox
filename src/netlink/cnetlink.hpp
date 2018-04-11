@@ -47,7 +47,7 @@ class cnetlink final : public rofl::cthread_env {
   };
 
 public:
-  cnetlink(std::shared_ptr<tap_manager> tap_man);
+  cnetlink();
   ~cnetlink() override;
 
   /**
@@ -66,6 +66,8 @@ public:
   static void nl_cb_v2(struct nl_cache *cache, struct nl_object *old_obj,
                        struct nl_object *new_obj, uint64_t diff, int action,
                        void *data);
+
+  void set_tapmanager(std::shared_ptr<tap_manager> tm);
 
   void start() {
     if (running)

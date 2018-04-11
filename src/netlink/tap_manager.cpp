@@ -298,6 +298,9 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
                  << " id(new)=" << tn_it->second;
     rv1.first->second = tn_it->second;
   }
+
+  // XXX FIXME get mtu
+  (void)nl;
 }
 
 void tap_manager::tap_dev_removed(int ifindex) {

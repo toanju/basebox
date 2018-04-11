@@ -24,10 +24,10 @@
 
 namespace basebox {
 
-cnetlink::cnetlink(std::shared_ptr<tap_manager> tap_man)
+cnetlink::cnetlink()
     : swi(nullptr), thread(this), caches(NL_MAX_CACHE, nullptr),
-      tap_man(tap_man), bridge(nullptr), nl_proc_max(10), running(false),
-      rfd_scheduled(false), l3(new nl_l3(tap_man, this)) {
+      bridge(nullptr), nl_proc_max(10), running(false), rfd_scheduled(false),
+      l3(new nl_l3(this)) {
 
   sock = nl_socket_alloc();
   if (NULL == sock) {
@@ -339,6 +339,11 @@ void cnetlink::nl_cb_v2(struct nl_cache *cache, struct nl_object *old_obj,
 
   assert(data);
   static_cast<cnetlink *>(data)->nl_objs.emplace_back(action, old_obj, new_obj);
+}
+
+void cnetlink::set_tapmanager(std::shared_ptr<tap_manager> tm) {
+  tap_man = tm;
+  l3->set_tapmanager(tm);
 }
 
 void cnetlink::route_addr_apply(const nl_obj &obj) {

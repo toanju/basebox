@@ -9,8 +9,8 @@
 
 namespace basebox {
 
-nbi_impl::nbi_impl(std::shared_ptr<tap_manager> tap_man)
-    : tap_man(tap_man), nl(new cnetlink(tap_man)) {
+nbi_impl::nbi_impl() : nl(new cnetlink()), tap_man(new tap_manager(nl.get())) {
+  nl->set_tapmanager(tap_man);
   nl->start();
 }
 

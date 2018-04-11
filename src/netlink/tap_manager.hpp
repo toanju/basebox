@@ -17,6 +17,7 @@
 
 namespace basebox {
 
+class cnetlink;
 class tap_io;
 class tap_manager;
 
@@ -68,7 +69,7 @@ private:
 class tap_manager final {
 
 public:
-  tap_manager() {}
+  tap_manager(cnetlink *nl) : nl(nl) {}
   ~tap_manager();
 
   int create_tapdev(uint32_t port_id, const std::string &port_name,
@@ -119,6 +120,7 @@ private:
   std::deque<uint32_t> port_deleted;
 
   basebox::tap_io io;
+  cnetlink *nl;
 };
 
 } // namespace basebox
