@@ -2,198 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <errno.h>
 #include <glog/logging.h>
 #include <netlink/route/link.h>
-#include <sys/resource.h>
 
 #include "cnetlink.hpp"
+#include "ctapdev.hpp"
+#include "tap_io.hpp"
 #include "tap_manager.hpp"
-#include "utils.hpp"
 
 namespace basebox {
 
-static inline void
-release_packets(std::deque<std::pair<int, basebox::packet *>> &q) {
-  for (auto i : q) {
-    std::free(i.second);
-  }
-}
-
-tap_io::tap_io() : thread(this) {
-  struct rlimit limit;
-  int rv = getrlimit(RLIMIT_NOFILE, &limit);
-
-  if (rv == -1) {
-    LOG(FATAL) << __FUNCTION__
-               << ": could not retrive RLIMIT_NOFILE errno=" << errno;
-  }
-
-  VLOG(2) << __FUNCTION__ << ": RLIMIT_NOFILE soft=" << limit.rlim_cur
-          << " hard=" << limit.rlim_max;
-
-  sw_cbs.resize(limit.rlim_max);
-
-  thread.start("tap_io");
-};
-
-tap_io::~tap_io() { thread.stop(); }
-
-void tap_io::register_tap(tap_io_details td) {
-  {
-    std::lock_guard<std::mutex> guard(events_mutex);
-    events.emplace_back(std::make_pair(TAP_IO_ADD, td));
-  }
-
-  thread.wakeup();
-}
-
-void tap_io::unregister_tap(int fd, uint32_t port_id) {
-  {
-    std::lock_guard<std::mutex> guard(events_mutex);
-    tap_io_details td;
-    td.fd = fd;
-    events.emplace_back(std::make_pair(TAP_IO_REM, td));
-  }
-
-  thread.wakeup();
-}
-
-void tap_io::enqueue(int fd, basebox::packet *pkt) {
-  if (fd == -1) {
-    std::free(pkt);
-    return;
-  }
-
-  {
-    // store pkt in outgoing queue
-    std::lock_guard<std::mutex> guard(pout_queue_mutex);
-    pout_queue.emplace_back(std::make_pair(fd, pkt));
-  }
-  thread.wakeup();
-}
-
-void tap_io::update_mtu(int fd, unsigned mtu) {
-  if (fd > sw_cbs.size()) {
-    LOG(ERROR) << __FUNCTION__ << ": invalid fd=" << fd;
-    return;
-  }
-
-  sw_cbs[fd].mtu = mtu;
-}
-
-void tap_io::handle_read_event(rofl::cthread &thread, int fd) {
-
-  tap_io_details *td;
-
-  try {
-    td = &sw_cbs.at(fd); // XXX move to a vector?
-  } catch (std::exception &e) {
-    LOG(ERROR) << __FUNCTION__ << ": failed to read from fd=" << fd;
-    return;
-  }
-
-  size_t len = sizeof(std::size_t) + 22 + td->mtu;
-
-  basebox::packet *pkt = (basebox::packet *)std::malloc(len);
-
-  if (pkt == nullptr) {
-    LOG(ERROR) << __FUNCTION__ << ": no mem left";
-    return;
-  }
-
-  pkt->len = read(fd, pkt->data, len);
-
-  if (pkt->len > 0) {
-    VLOG(3) << __FUNCTION__ << ": read " << pkt->len << " bytes from fd=" << fd
-            << " into pkt=" << pkt << " tid=" << pthread_self();
-    assert(td->cb);
-    td->cb->enqueue_to_switch(td->port_id, pkt);
-  } else {
-    // error occured (or non-blocking)
-    switch (errno) {
-    case EAGAIN:
-      LOG(ERROR) << __FUNCTION__
-                 << ": EAGAIN XXX not implemented packet is dropped";
-      std::free(pkt);
-      break;
-    default:
-      LOG(ERROR) << __FUNCTION__ << ": unknown error occured";
-      std::free(pkt);
-      break;
-    }
-  }
-}
-
-void tap_io::handle_write_event(rofl::cthread &thread, int fd) {
-  thread.drop_write_fd(fd);
-  tx();
-}
-
-void tap_io::tx() {
-  std::pair<int, basebox::packet *> pkt;
-  std::deque<std::pair<int, basebox::packet *>> out_queue;
-
-  {
-    std::lock_guard<std::mutex> guard(pout_queue_mutex);
-    std::swap(out_queue, pout_queue);
-  }
-
-  while (not out_queue.empty()) {
-
-    pkt = out_queue.front();
-    int rc = 0;
-    if ((rc = write(pkt.first, pkt.second->data, pkt.second->len)) < 0) {
-      switch (errno) {
-      case EAGAIN:
-        VLOG(1) << __FUNCTION__ << ": EAGAIN";
-        {
-          std::lock_guard<std::mutex> guard(pout_queue_mutex);
-          std::move(out_queue.rbegin(), out_queue.rend(),
-                    std::front_inserter(pout_queue));
-        }
-        thread.add_write_fd(pkt.first, true, false);
-        return;
-      case EIO:
-        // tap not enabled drop packet
-        VLOG(1) << __FUNCTION__ << ": EIO";
-        release_packets(out_queue);
-        return;
-      default:
-        // will drop packets
-        release_packets(out_queue);
-        LOG(ERROR) << __FUNCTION__ << ": unknown error occurred rc=" << rc
-                   << " errno=" << errno << " '" << strerror(errno);
-        return;
-      }
-    }
-    std::free(pkt.second);
-    out_queue.pop_front();
-  }
-}
-
-void tap_io::handle_events() {
-  std::lock_guard<std::mutex> guard(events_mutex);
-
-  // register fds
-  for (auto ev : events) {
-    int fd = ev.second.fd;
-    switch (ev.first) {
-
-    case TAP_IO_ADD:
-      sw_cbs[fd] = ev.second;
-      thread.add_read_fd(fd, true, false);
-      break;
-    case TAP_IO_REM:
-      thread.drop_fd(fd, false);
-      sw_cbs[fd] = tap_io_details();
-      break;
-    default:
-      break;
-    }
-  }
-  events.clear();
-}
+tap_manager::tap_manager(cnetlink *nl) : io(new tap_io()), nl(nl) {}
 
 tap_manager::~tap_manager() { destroy_tapdevs(); }
 
@@ -236,7 +55,7 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
 
       // start reading from port
       tap_io::tap_io_details td(fd, port_id, &cb, 0);
-      io.register_tap(td);
+      io->register_tap(td);
 
     } catch (std::exception &e) {
       LOG(ERROR) << __FUNCTION__ << ": failed to create tapdev " << port_name;
@@ -274,7 +93,7 @@ int tap_manager::destroy_tapdev(uint32_t port_id,
   delete dev;
 
   // XXX check if previous to delete
-  io.unregister_tap(fd, port_id);
+  io->unregister_tap(fd, port_id);
 
   return 0;
 }
@@ -291,7 +110,7 @@ void tap_manager::destroy_tapdevs() {
 int tap_manager::enqueue(uint32_t port_id, basebox::packet *pkt) {
   try {
     int fd = tap_devs.at(port_id)->get_fd();
-    io.enqueue(fd, pkt);
+    io->enqueue(fd, pkt);
   } catch (std::exception &e) {
     LOG(ERROR) << __FUNCTION__ << ": failed to enqueue packet " << pkt
                << " to port_id=" << port_id;
@@ -360,7 +179,7 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
     return;
   }
 
-  io.update_mtu(dev_it->second->get_fd(), mtu);
+  io->update_mtu(dev_it->second->get_fd(), mtu);
 }
 
 void tap_manager::tap_dev_removed(int ifindex) {
