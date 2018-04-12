@@ -2,8 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <errno.h>
 #include <glog/logging.h>
-#include "netlink/tap_manager.hpp"
+#include <netlink/route/link.h>
+#include <sys/resource.h>
+
+#include "cnetlink.hpp"
+#include "tap_manager.hpp"
 #include "utils.hpp"
 
 namespace basebox {
@@ -15,12 +20,29 @@ release_packets(std::deque<std::pair<int, basebox::packet *>> &q) {
   }
 }
 
+tap_io::tap_io() : thread(this) {
+  struct rlimit limit;
+  int rv = getrlimit(RLIMIT_NOFILE, &limit);
+
+  if (rv == -1) {
+    LOG(FATAL) << __FUNCTION__
+               << ": could not retrive RLIMIT_NOFILE errno=" << errno;
+  }
+
+  VLOG(2) << __FUNCTION__ << ": RLIMIT_NOFILE soft=" << limit.rlim_cur
+          << " hard=" << limit.rlim_max;
+
+  sw_cbs.resize(limit.rlim_max);
+
+  thread.start("tap_io");
+};
+
 tap_io::~tap_io() { thread.stop(); }
 
-void tap_io::register_tap(int fd, uint32_t port_id, switch_callback &cb) {
+void tap_io::register_tap(tap_io_details td) {
   {
     std::lock_guard<std::mutex> guard(events_mutex);
-    events.emplace_back(std::make_tuple(TAP_IO_ADD, fd, port_id, &cb));
+    events.emplace_back(std::make_pair(TAP_IO_ADD, td));
   }
 
   thread.wakeup();
@@ -29,7 +51,9 @@ void tap_io::register_tap(int fd, uint32_t port_id, switch_callback &cb) {
 void tap_io::unregister_tap(int fd, uint32_t port_id) {
   {
     std::lock_guard<std::mutex> guard(events_mutex);
-    events.emplace_back(std::make_tuple(TAP_IO_REM, fd, port_id, nullptr));
+    tap_io_details td;
+    td.fd = fd;
+    events.emplace_back(std::make_pair(TAP_IO_REM, td));
   }
 
   thread.wakeup();
@@ -49,22 +73,42 @@ void tap_io::enqueue(int fd, basebox::packet *pkt) {
   thread.wakeup();
 }
 
+void tap_io::update_mtu(int fd, unsigned mtu) {
+  if (fd > sw_cbs.size()) {
+    LOG(ERROR) << __FUNCTION__ << ": invalid fd=" << fd;
+    return;
+  }
+
+  sw_cbs[fd].mtu = mtu;
+}
+
 void tap_io::handle_read_event(rofl::cthread &thread, int fd) {
-  basebox::packet *pkt = (basebox::packet *)std::malloc(sizeof(std::size_t) +
-                                                        1528); // TODO use mtu
+
+  tap_io_details *td;
+
+  try {
+    td = &sw_cbs.at(fd); // XXX move to a vector?
+  } catch (std::exception &e) {
+    LOG(ERROR) << __FUNCTION__ << ": failed to read from fd=" << fd;
+    return;
+  }
+
+  size_t len = sizeof(std::size_t) + 22 + td->mtu;
+
+  basebox::packet *pkt = (basebox::packet *)std::malloc(len);
 
   if (pkt == nullptr) {
     LOG(ERROR) << __FUNCTION__ << ": no mem left";
     return;
   }
 
-  pkt->len = read(fd, pkt->data, 1528);
+  pkt->len = read(fd, pkt->data, len);
 
   if (pkt->len > 0) {
     VLOG(3) << __FUNCTION__ << ": read " << pkt->len << " bytes from fd=" << fd
             << " into pkt=" << pkt << " tid=" << pthread_self();
-    std::pair<uint32_t, switch_callback *> &cb = sw_cbs.at(fd);
-    cb.second->enqueue_to_switch(cb.first, pkt);
+    assert(td->cb);
+    td->cb->enqueue_to_switch(td->port_id, pkt);
   } else {
     // error occured (or non-blocking)
     switch (errno) {
@@ -133,17 +177,16 @@ void tap_io::handle_events() {
 
   // register fds
   for (auto ev : events) {
-    int fd = std::get<1>(ev);
-    switch (std::get<0>(ev)) {
+    int fd = ev.second.fd;
+    switch (ev.first) {
 
     case TAP_IO_ADD:
-      sw_cbs.emplace(
-          std::make_pair(fd, std::make_pair(std::get<2>(ev), std::get<3>(ev))));
+      sw_cbs[fd] = ev.second;
       thread.add_read_fd(fd, true, false);
       break;
     case TAP_IO_REM:
       thread.drop_fd(fd, false);
-      sw_cbs.erase(fd);
+      sw_cbs[fd] = tap_io_details();
       break;
     default:
       break;
@@ -192,7 +235,8 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
                 << " portname=" << port_name << " fd=" << fd << " ptr=" << dev;
 
       // start reading from port
-      io.register_tap(fd, port_id, cb);
+      tap_io::tap_io_details td(fd, port_id, &cb, 0);
+      io.register_tap(td);
 
     } catch (std::exception &e) {
       LOG(ERROR) << __FUNCTION__ << ": failed to create tapdev " << port_name;
@@ -299,8 +343,24 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
     rv1.first->second = tn_it->second;
   }
 
-  // XXX FIXME get mtu
-  (void)nl;
+  std::unique_ptr<rtnl_link, void (*)(rtnl_link *)> l(
+      nl->get_link_by_ifindex(ifindex), &rtnl_link_put);
+
+  if (!l) {
+    LOG(ERROR) << __FUNCTION__ << ": invalid link ifindex=" << ifindex;
+    return;
+  }
+
+  // XXX FIXME register mtu size
+  int mtu = rtnl_link_get_mtu(l.get());
+  auto dev_it = tap_devs.find(rv1.first->second);
+
+  if (dev_it == tap_devs.end()) {
+    LOG(ERROR) << __FUNCTION__ << ": tap_dev not found";
+    return;
+  }
+
+  io.update_mtu(dev_it->second->get_fd(), mtu);
 }
 
 void tap_manager::tap_dev_removed(int ifindex) {

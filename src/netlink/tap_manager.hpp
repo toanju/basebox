@@ -27,6 +27,27 @@ public:
 };
 
 class tap_io : public rofl::cthread_env {
+public:
+  struct tap_io_details {
+    tap_io_details() : fd(-1), port_id(0), cb(nullptr), mtu(0) {}
+    tap_io_details(int fd, uint32_t port_id, switch_callback *cb, unsigned mtu)
+        : fd(fd), port_id(port_id), cb(cb), mtu(mtu) {}
+    int fd;
+    uint32_t port_id;
+    switch_callback *cb;
+    unsigned mtu;
+  };
+
+  tap_io();
+  virtual ~tap_io();
+
+  // port_id should be removed at some point and be rather data
+  void register_tap(tap_io_details td);
+  void unregister_tap(int fd, uint32_t port_id);
+  void enqueue(int fd, basebox::packet *pkt);
+  void update_mtu(int fd, unsigned mtu);
+
+private:
   enum tap_io_event {
     TAP_IO_ADD,
     TAP_IO_REM,
@@ -36,21 +57,14 @@ class tap_io : public rofl::cthread_env {
   std::deque<std::pair<int, basebox::packet *>> pout_queue;
   std::mutex pout_queue_mutex;
 
-  std::deque<std::tuple<enum tap_io_event, int, uint32_t, switch_callback *>>
-      events;
+  std::deque<std::pair<enum tap_io_event, tap_io_details>> events;
   std::mutex events_mutex;
 
   std::deque<std::pair<int, basebox::packet *>> pin_queue;
-  std::map<int, std::pair<uint32_t, switch_callback *>> sw_cbs;
+  std::vector<tap_io_details> sw_cbs;
 
-public:
-  tap_io() : thread(this) { thread.start("tap_io"); };
-  virtual ~tap_io();
-
-  // port_id should be removed at some point and be rather data
-  void register_tap(int fd, uint32_t port_id, switch_callback &cb);
-  void unregister_tap(int fd, uint32_t port_id);
-  void enqueue(int fd, basebox::packet *pkt);
+  void tx();
+  void handle_events();
 
 protected:
   void handle_read_event(rofl::cthread &thread, int fd);
@@ -60,10 +74,6 @@ protected:
     tx();
   }
   void handle_timeout(rofl::cthread &thread, uint32_t timer_id) {}
-
-private:
-  void tx();
-  void handle_events();
 };
 
 class tap_manager final {
