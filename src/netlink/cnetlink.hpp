@@ -5,7 +5,6 @@
 #pragma once
 
 #include <deque>
-#include <exception>
 #include <memory>
 #include <mutex>
 #include <tuple>
