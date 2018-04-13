@@ -10,8 +10,7 @@
 
 namespace basebox {
 
-static inline void
-release_packets(std::deque<std::pair<int, basebox::packet *>> &q) {
+static inline void release_packets(std::deque<std::pair<int, packet *>> &q) {
   for (auto i : q) {
     std::free(i.second);
   }
@@ -56,7 +55,7 @@ void tap_io::unregister_tap(int fd, uint32_t port_id) {
   thread.wakeup();
 }
 
-void tap_io::enqueue(int fd, basebox::packet *pkt) {
+void tap_io::enqueue(int fd, packet *pkt) {
   if (fd == -1) {
     std::free(pkt);
     return;
@@ -92,7 +91,7 @@ void tap_io::handle_read_event(rofl::cthread &thread, int fd) {
 
   size_t len = sizeof(std::size_t) + 22 + td->mtu;
 
-  basebox::packet *pkt = (basebox::packet *)std::malloc(len);
+  packet *pkt = (packet *)std::malloc(len);
 
   if (pkt == nullptr) {
     LOG(ERROR) << __FUNCTION__ << ": no mem left";
@@ -128,8 +127,8 @@ void tap_io::handle_write_event(rofl::cthread &thread, int fd) {
 }
 
 void tap_io::tx() {
-  std::pair<int, basebox::packet *> pkt;
-  std::deque<std::pair<int, basebox::packet *>> out_queue;
+  std::pair<int, packet *> pkt;
+  std::deque<std::pair<int, packet *>> out_queue;
 
   {
     std::lock_guard<std::mutex> guard(pout_queue_mutex);

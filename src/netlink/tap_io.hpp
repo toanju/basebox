@@ -26,7 +26,7 @@ public:
   // port_id should be removed at some point and be rather data
   void register_tap(tap_io_details td);
   void unregister_tap(int fd, uint32_t port_id);
-  void enqueue(int fd, basebox::packet *pkt);
+  void enqueue(int fd, packet *pkt);
   void update_mtu(int fd, unsigned mtu);
 
 private:
@@ -36,13 +36,13 @@ private:
   };
 
   rofl::cthread thread;
-  std::deque<std::pair<int, basebox::packet *>> pout_queue;
+  std::deque<std::pair<int, packet *>> pout_queue;
   std::mutex pout_queue_mutex;
 
   std::deque<std::pair<enum tap_io_event, tap_io_details>> events;
   std::mutex events_mutex;
 
-  std::deque<std::pair<int, basebox::packet *>> pin_queue;
+  std::deque<std::pair<int, packet *>> pin_queue;
   std::vector<tap_io_details> sw_cbs;
 
   void tx();
