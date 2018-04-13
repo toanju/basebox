@@ -61,11 +61,15 @@ void tap_io::enqueue(int fd, packet *pkt) {
     return;
   }
 
-  {
+  if (fd < sw_cbs.capacity() && sw_cbs[fd].fd == fd) {
     // store pkt in outgoing queue
     std::lock_guard<std::mutex> guard(pout_queue_mutex);
     pout_queue.emplace_back(std::make_pair(fd, pkt));
+  } else {
+    std::free(pkt);
+    return;
   }
+
   thread.wakeup();
 }
 
