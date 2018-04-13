@@ -40,7 +40,7 @@ public:
 
   std::map<std::string, uint32_t> get_registered_ports() const {
     std::lock_guard<std::mutex> lock(tn_mutex);
-    return tap_names;
+    return tap_names2id;
   }
 
   uint32_t get_port_id(int ifindex) const noexcept {
@@ -70,7 +70,8 @@ private:
 
   std::map<uint32_t, ctapdev *> tap_devs; // southbound id:tap_device
   mutable std::mutex tn_mutex;            // tap names mutex
-  std::map<std::string, uint32_t> tap_names;
+  std::map<std::string, uint32_t> tap_names2id;
+  std::map<std::string, int> tap_names2fds;
 
   std::map<int, uint32_t> ifindex_to_id;
   std::map<uint32_t, int> id_to_ifindex;

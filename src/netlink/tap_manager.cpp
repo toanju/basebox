@@ -28,35 +28,40 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
 
   {
     std::lock_guard<std::mutex> lock{tn_mutex};
-    auto dev_name_it = tap_names.find(port_name);
+    auto dev_name_it = tap_names2id.find(port_name);
 
-    if (dev_name_it != tap_names.end())
+    if (dev_name_it != tap_names2id.end())
       dev_name_exists = true;
   }
 
   if (!dev_exists && !dev_name_exists) {
     // create a new tap device
-
     ctapdev *dev;
+
     try {
       dev = new ctapdev(port_name);
       tap_devs.insert(std::make_pair(port_id, dev));
       {
         std::lock_guard<std::mutex> lock{tn_mutex};
-        tap_names.insert(std::make_pair(port_name, port_id));
+        tap_names2id.emplace(std::make_pair(port_name, port_id));
       }
 
       // create the port
       dev->tap_open();
+
       int fd = dev->get_fd();
 
       LOG(INFO) << __FUNCTION__ << ": port_id=" << port_id
                 << " portname=" << port_name << " fd=" << fd << " ptr=" << dev;
 
+      {
+        std::lock_guard<std::mutex> lock{tn_mutex};
+        tap_names2fds.emplace(std::make_pair(port_name, fd));
+      }
+
       // start reading from port
       tap_io::tap_io_details td(fd, port_id, &cb, 0);
       io->register_tap(td);
-
     } catch (std::exception &e) {
       LOG(ERROR) << __FUNCTION__ << ": failed to create tapdev " << port_name;
       r = -EINVAL;
@@ -65,6 +70,7 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
     LOG(INFO) << __FUNCTION__ << ": " << port_name
               << " with port_id=" << port_id << " already existing";
   }
+
   return r;
 }
 
@@ -80,10 +86,10 @@ int tap_manager::destroy_tapdev(uint32_t port_id,
   // drop port from name mapping
   std::lock_guard<std::mutex> lock{tn_mutex};
   port_deleted.push_back(port_id);
-  auto tap_names_it = tap_names.find(port_name);
+  auto tap_names_it = tap_names2id.find(port_name);
 
-  if (tap_names_it != tap_names.end()) {
-    tap_names.erase(tap_names_it);
+  if (tap_names_it != tap_names2id.end()) {
+    tap_names2id.erase(tap_names_it);
   }
 
   // drop port from port mapping
@@ -92,7 +98,6 @@ int tap_manager::destroy_tapdev(uint32_t port_id,
   tap_devs.erase(it);
   delete dev;
 
-  // XXX check if previous to delete
   io->unregister_tap(fd, port_id);
 
   return 0;
@@ -104,7 +109,7 @@ void tap_manager::destroy_tapdevs() {
   for (auto &dev : ddevs) {
     delete dev.second;
   }
-  tap_names.clear();
+  tap_names2id.clear();
 }
 
 int tap_manager::enqueue(uint32_t port_id, basebox::packet *pkt) {
@@ -125,9 +130,9 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
     return;
 
   std::lock_guard<std::mutex> lock{tn_mutex};
-  auto tn_it = tap_names.find(name);
+  auto tn_it = tap_names2id.find(name);
 
-  if (tn_it == tap_names.end()) {
+  if (tn_it == tap_names2id.end()) {
     LOG(WARNING) << __FUNCTION__ << "invalid port name " << name;
     return;
   }
@@ -170,16 +175,15 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
     return;
   }
 
-  // XXX FIXME register mtu size
   int mtu = rtnl_link_get_mtu(l.get());
-  auto dev_it = tap_devs.find(rv1.first->second);
+  auto fd_it = tap_names2fds.find(name);
 
-  if (dev_it == tap_devs.end()) {
+  if (fd_it == tap_names2fds.end()) {
     LOG(ERROR) << __FUNCTION__ << ": tap_dev not found";
     return;
   }
 
-  io->update_mtu(dev_it->second->get_fd(), mtu);
+  io->update_mtu(fd_it->second, mtu);
 }
 
 void tap_manager::tap_dev_removed(int ifindex) {
