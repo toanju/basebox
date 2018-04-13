@@ -27,7 +27,7 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
     dev_exists = true;
 
   {
-    std::lock_guard<std::mutex> lock{rp_mutex};
+    std::lock_guard<std::mutex> lock{tn_mutex};
     auto dev_name_it = tap_names.find(port_name);
 
     if (dev_name_it != tap_names.end())
@@ -42,7 +42,7 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
       dev = new ctapdev(port_name);
       tap_devs.insert(std::make_pair(port_id, dev));
       {
-        std::lock_guard<std::mutex> lock{rp_mutex};
+        std::lock_guard<std::mutex> lock{tn_mutex};
         tap_names.insert(std::make_pair(port_name, port_id));
       }
 
@@ -78,7 +78,7 @@ int tap_manager::destroy_tapdev(uint32_t port_id,
   }
 
   // drop port from name mapping
-  std::lock_guard<std::mutex> lock{rp_mutex};
+  std::lock_guard<std::mutex> lock{tn_mutex};
   port_deleted.push_back(port_id);
   auto tap_names_it = tap_names.find(port_name);
 
@@ -124,7 +124,7 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
   if (it != ifindex_to_id.end())
     return;
 
-  std::lock_guard<std::mutex> lock{rp_mutex};
+  std::lock_guard<std::mutex> lock{tn_mutex};
   auto tn_it = tap_names.find(name);
 
   if (tn_it == tap_names.end()) {
@@ -183,7 +183,7 @@ void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {
 }
 
 void tap_manager::tap_dev_removed(int ifindex) {
-  std::lock_guard<std::mutex> lock{rp_mutex};
+  std::lock_guard<std::mutex> lock{tn_mutex};
 
   auto ifi2id_it = ifindex_to_id.find(ifindex);
   if (ifi2id_it == ifindex_to_id.end()) {

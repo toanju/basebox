@@ -39,7 +39,7 @@ public:
   int enqueue(uint32_t port_id, basebox::packet *pkt);
 
   std::map<std::string, uint32_t> get_registered_ports() const {
-    std::lock_guard<std::mutex> lock(rp_mutex);
+    std::lock_guard<std::mutex> lock(tn_mutex);
     return tap_names;
   }
 
@@ -69,7 +69,7 @@ private:
   tap_manager &operator=(const tap_manager &) = delete; // non copyable
 
   std::map<uint32_t, ctapdev *> tap_devs; // southbound id:tap_device
-  mutable std::mutex rp_mutex;
+  mutable std::mutex tn_mutex;            // tap names mutex
   std::map<std::string, uint32_t> tap_names;
 
   std::map<int, uint32_t> ifindex_to_id;
