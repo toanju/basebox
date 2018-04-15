@@ -291,7 +291,7 @@ void nl_bridge::add_neigh_to_fdb(rtnl_neigh *neigh) {
   sw->l2_addr_add(port, vlan, _mac, true);
 }
 
-void nl_bridge::remove_mac_from_fdb(rtnl_neigh *neigh) {
+void nl_bridge::remove_neigh_from_fdb(rtnl_neigh *neigh) {
   assert(sw);
   nl_addr *addr = rtnl_neigh_get_lladdr(neigh);
   if (nl_addr_cmp(rtnl_link_get_addr(bridge), addr) == 0) {

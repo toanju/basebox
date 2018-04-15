@@ -827,7 +827,7 @@ void cnetlink::neigh_ll_deleted(rtnl_neigh *neigh) noexcept {
     return;
   }
 
-  bridge->remove_mac_from_fdb(neigh);
+  bridge->remove_neigh_from_fdb(neigh);
 }
 
 void cnetlink::resend_state() noexcept {
