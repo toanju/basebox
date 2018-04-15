@@ -44,7 +44,6 @@ public:
   void delete_interface(rtnl_link *);
 
   void add_neigh_to_fdb(rtnl_neigh *);
-  void add_mac_to_fdb(rtnl_neigh *, rtnl_link *);
 
   void remove_mac_from_fdb(rtnl_neigh *);
 
