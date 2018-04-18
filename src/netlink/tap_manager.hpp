@@ -36,7 +36,7 @@ public:
 
   void destroy_tapdevs();
 
-  int enqueue(uint32_t port_id, basebox::packet *pkt);
+  int enqueue(int fd, basebox::packet *pkt);
 
   std::map<std::string, uint32_t> get_registered_ports() const {
     std::lock_guard<std::mutex> lock(tn_mutex);
@@ -44,6 +44,7 @@ public:
   }
 
   uint32_t get_port_id(int ifindex) const noexcept {
+    // XXX TODO add assert wrt threading
     auto it = ifindex_to_id.find(ifindex);
     if (it == ifindex_to_id.end()) {
       return 0;
@@ -53,6 +54,7 @@ public:
   }
 
   int get_ifindex(uint32_t port_id) const noexcept {
+    // XXX TODO add assert wrt threading
     auto it = id_to_ifindex.find(port_id);
     if (it == id_to_ifindex.end()) {
       return 0;
@@ -61,6 +63,8 @@ public:
     }
   }
 
+  int get_fd(uint32_t port_id) const noexcept;
+
   void tap_dev_ready(int ifindex, const std::string &name);
   void tap_dev_removed(int ifindex);
 
@@ -68,14 +72,18 @@ private:
   tap_manager(const tap_manager &other) = delete; // non construction-copyable
   tap_manager &operator=(const tap_manager &) = delete; // non copyable
 
-  std::map<uint32_t, ctapdev *> tap_devs; // southbound id:tap_device
-  mutable std::mutex tn_mutex;            // tap names mutex
+  // locked access
+  mutable std::mutex tn_mutex; // tap names mutex
   std::map<std::string, uint32_t> tap_names2id;
   std::map<std::string, int> tap_names2fds;
 
+  // only accessible from southbound
+  std::map<uint32_t, ctapdev *> tap_devs; // southbound id:tap_device
+  std::deque<uint32_t> port_deleted;
+
+  // only accessible from cnetlink
   std::map<int, uint32_t> ifindex_to_id;
   std::map<uint32_t, int> id_to_ifindex;
-  std::deque<uint32_t> port_deleted;
 
   std::unique_ptr<tap_io> io;
   cnetlink *nl;

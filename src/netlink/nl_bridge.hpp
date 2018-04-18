@@ -25,6 +25,7 @@ namespace basebox {
 class cnetlink;
 class switch_interface;
 class tap_manager;
+struct packet;
 
 class nl_bridge {
 public:
@@ -42,6 +43,8 @@ public:
   void add_neigh_to_fdb(rtnl_neigh *);
   void remove_neigh_from_fdb(rtnl_neigh *);
 
+  int learn_source_mac(rtnl_link *br_link, packet *p);
+
 private:
   void update_vlans(rtnl_link *, rtnl_link *);
 
@@ -50,6 +53,7 @@ private:
   std::shared_ptr<tap_manager> tap_man;
   cnetlink *nl;
   rtnl_link_bridge_vlan empty_br_vlan;
+  nl_cache *l2_cache;
 };
 
 } /* namespace basebox */

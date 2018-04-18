@@ -14,11 +14,6 @@
 
 namespace basebox {
 
-struct vlan_hdr {
-  struct ethhdr eth; // vid + cfi + pcp
-  uint16_t vlan;     // ethernet type
-} __attribute__((packed));
-
 void controller::handle_dpt_open(rofl::crofdpt &dpt) {
 
   std::lock_guard<std::mutex> lock(conn_mutex);

@@ -68,6 +68,9 @@ public:
 
   void set_tapmanager(std::shared_ptr<tap_manager> tm);
 
+  int send_nl_msg(nl_msg *msg);
+  void learn_l2(uint32_t port_id, int fd, packet *pkt);
+
   void start() {
     if (running)
       return;
@@ -93,7 +96,8 @@ private:
   switch_interface *swi;
 
   rofl::cthread thread;
-  struct nl_sock *sock;
+  struct nl_sock *sock_mon;
+  struct nl_sock *sock_tx;
   struct nl_cache_mngr *mngr;
   std::vector<struct nl_cache *> caches;
   std::deque<std::tuple<uint32_t, enum nbi::port_status, int>>
@@ -110,6 +114,18 @@ private:
 
   std::shared_ptr<nl_l3> l3;
 
+  std::mutex pi_mutex;
+
+  struct nl_pkt_in {
+    nl_pkt_in(uint32_t port_id, int fd, packet *pkt)
+        : port_id(port_id), fd(fd), pkt(pkt) {}
+    uint32_t port_id;
+    int fd;
+    packet *pkt;
+  };
+
+  std::deque<nl_pkt_in> packet_in;
+
   void route_addr_apply(const nl_obj &obj);
   void route_link_apply(const nl_obj &obj);
   void route_neigh_apply(const nl_obj &obj);
@@ -123,6 +139,8 @@ private:
   int load_from_file(const std::string &path);
 
   void init_caches();
+
+  int set_nl_socket_buffer_sizes(nl_sock *sk);
 
   void destroy_caches();
 

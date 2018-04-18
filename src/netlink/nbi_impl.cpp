@@ -54,7 +54,9 @@ int nbi_impl::enqueue(uint32_t port_id, basebox::packet *pkt) noexcept {
   int rv = 0;
   assert(pkt);
   try {
-    tap_man->enqueue(port_id, pkt);
+    // detour via netlink to learn the source mac
+    int fd = tap_man->get_fd(port_id);
+    nl->learn_l2(port_id, fd, pkt);
   } catch (std::exception &e) {
     LOG(ERROR) << __FUNCTION__
                << ": failed to enqueue packet for port_id=" << port_id << ": "

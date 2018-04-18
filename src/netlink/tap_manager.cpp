@@ -112,16 +112,26 @@ void tap_manager::destroy_tapdevs() {
   tap_names2id.clear();
 }
 
-int tap_manager::enqueue(uint32_t port_id, basebox::packet *pkt) {
+int tap_manager::enqueue(int fd, basebox::packet *pkt) {
   try {
-    int fd = tap_devs.at(port_id)->get_fd();
     io->enqueue(fd, pkt);
   } catch (std::exception &e) {
     LOG(ERROR) << __FUNCTION__ << ": failed to enqueue packet " << pkt
-               << " to port_id=" << port_id;
+               << " to fd=" << fd;
     std::free(pkt);
   }
   return 0;
+}
+
+int tap_manager::get_fd(uint32_t port_id) const noexcept {
+  // XXX TODO add assert wrt threading
+  auto it = tap_devs.find(port_id);
+
+  if (it == tap_devs.end()) {
+    return -EINVAL;
+  }
+
+  return it->second->get_fd();
 }
 
 void tap_manager::tap_dev_ready(int ifindex, const std::string &name) {

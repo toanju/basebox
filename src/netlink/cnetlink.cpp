@@ -30,11 +30,15 @@ cnetlink::cnetlink()
       bridge(nullptr), nl_proc_max(10), running(false), rfd_scheduled(false),
       l3(new nl_l3(this)) {
 
-  sock = nl_socket_alloc();
-  if (NULL == sock) {
+  sock_tx = nl_socket_alloc();
+  if (sock_tx == nullptr) {
     LOG(FATAL) << "cnetlink: failed to create netlink socket" << __FUNCTION__;
     throw eNetLinkCritical(__FUNCTION__);
   }
+
+  nl_connect(sock_tx, NETLINK_ROUTE);
+
+  set_nl_socket_buffer_sizes(sock_tx);
 
   try {
     thread.start("netlink");
@@ -48,7 +52,8 @@ cnetlink::~cnetlink() {
   thread.stop();
   delete bridge;
   destroy_caches();
-  nl_socket_free(sock);
+  nl_socket_free(sock_mon);
+  nl_socket_free(sock_tx);
 }
 
 int cnetlink::load_from_file(const std::string &path) {
@@ -69,37 +74,37 @@ int cnetlink::load_from_file(const std::string &path) {
 
 void cnetlink::init_caches() {
 
-  int rc = nl_cache_mngr_alloc(sock, NETLINK_ROUTE, NL_AUTO_PROVIDE, &mngr);
+  sock_mon = nl_socket_alloc();
+  if (sock_mon == nullptr) {
+    LOG(FATAL) << "cnetlink: failed to create netlink socket" << __FUNCTION__;
+    throw eNetLinkCritical(__FUNCTION__);
+  }
+
+  int rc = nl_cache_mngr_alloc(sock_mon, NETLINK_ROUTE, NL_AUTO_PROVIDE, &mngr);
 
   if (rc < 0) {
     LOG(FATAL) << __FUNCTION__ << ": failed to allocate netlink cache manager";
   }
 
-  int rx_size = load_from_file("/proc/sys/net/core/rmem_max");
-  int tx_size = load_from_file("/proc/sys/net/core/wmem_max");
+  set_nl_socket_buffer_sizes(sock_mon);
 
-  if (0 != nl_socket_set_buffer_size(sock, rx_size, tx_size)) {
-    LOG(FATAL) << ": failed to resize socket buffers";
-  }
-  nl_socket_set_msg_buf_size(sock, rx_size);
-
-  caches[NL_LINK_CACHE] = NULL;
-  caches[NL_NEIGH_CACHE] = NULL;
-
-  rc = rtnl_link_alloc_cache_flags(sock, AF_UNSPEC, &caches[NL_LINK_CACHE],
+  rc = rtnl_link_alloc_cache_flags(sock_mon, AF_UNSPEC, &caches[NL_LINK_CACHE],
                                    NL_CACHE_AF_ITER);
+
   if (0 != rc) {
     LOG(FATAL) << __FUNCTION__
                << ": rtnl_link_alloc_cache_flags failed rc=" << rc;
   }
+
   rc = nl_cache_mngr_add_cache_v2(mngr, caches[NL_LINK_CACHE],
                                   (change_func_v2_t)&nl_cb_v2, this);
+
   if (0 != rc) {
     LOG(FATAL) << __FUNCTION__ << ": add route/link to cache mngr";
   }
 
   /* init route cache */
-  rc = rtnl_route_alloc_cache(sock, AF_UNSPEC, 0, &caches[NL_ROUTE_CACHE]);
+  rc = rtnl_route_alloc_cache(sock_mon, AF_UNSPEC, 0, &caches[NL_ROUTE_CACHE]);
   if (rc < 0) {
     LOG(FATAL) << __FUNCTION__ << ": add route/route to cache mngr";
   }
@@ -110,7 +115,7 @@ void cnetlink::init_caches() {
   }
 
   /* init addr cache*/
-  rc = rtnl_addr_alloc_cache(sock, &caches[NL_ADDR_CACHE]);
+  rc = rtnl_addr_alloc_cache(sock_mon, &caches[NL_ADDR_CACHE]);
   if (rc < 0) {
     LOG(FATAL) << __FUNCTION__ << ": add route/addr to cache mngr";
   }
@@ -121,7 +126,7 @@ void cnetlink::init_caches() {
   }
 
   /* init neigh cache */
-  rc = rtnl_neigh_alloc_cache_flags(sock, &caches[NL_NEIGH_CACHE],
+  rc = rtnl_neigh_alloc_cache_flags(sock_mon, &caches[NL_NEIGH_CACHE],
                                     NL_CACHE_AF_ITER);
   if (0 != rc) {
     LOG(FATAL) << __FUNCTION__
@@ -134,6 +139,29 @@ void cnetlink::init_caches() {
   }
 
   thread.wakeup();
+}
+
+int cnetlink::set_nl_socket_buffer_sizes(nl_sock *sk) {
+  int rx_size = load_from_file("/proc/sys/net/core/rmem_max");
+  int tx_size = load_from_file("/proc/sys/net/core/wmem_max");
+
+  LOG(INFO) << __FUNCTION__
+            << ": netlink buffers are set to rx_size=" << rx_size
+            << ", tx_size=" << tx_size;
+
+  int err = nl_socket_set_buffer_size(sk, rx_size, tx_size);
+  if (err != 0) {
+    LOG(FATAL) << ": failed to call nl_socket_set_buffer_size: "
+               << nl_geterror(err);
+  }
+
+  err = nl_socket_set_msg_buf_size(sk, rx_size);
+  if (err != 0) {
+    LOG(FATAL) << ": failed to call nl_socket_set_msg_buf_size: "
+               << nl_geterror(err);
+  }
+
+  return err;
 }
 
 void cnetlink::destroy_caches() { nl_cache_mngr_free(mngr); }
@@ -268,12 +296,45 @@ void cnetlink::handle_wakeup(rofl::cthread &thread) {
     }
 
     // apply changes
-    if ((rv = rtnl_link_change(sock, link, lchange, 0)) < 0) {
+    if ((rv = rtnl_link_change(sock_mon, link, lchange, 0)) < 0) {
       LOG(ERROR) << __FUNCTION__ << ": Unable to change link, "
                  << nl_geterror(rv);
     }
     rtnl_link_put(link);
     rtnl_link_put(lchange);
+  }
+
+  // handle source mac learning
+  std::deque<nl_pkt_in> _packet_in;
+
+  {
+    std::lock_guard<std::mutex> scoped_lock(pi_mutex);
+    _packet_in.swap(packet_in);
+  }
+
+  for (int cnt = 0; cnt < nl_proc_max && _packet_in.size() && running; cnt++) {
+    auto p = _packet_in.front();
+    int ifindex = tap_man->get_ifindex(p.port_id);
+
+    VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex;
+
+    if (ifindex && bridge) {
+      rtnl_link *br_link = get_link(ifindex, AF_BRIDGE);
+      VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex
+              << ", bridge=" << bridge << ", br_link=" << OBJ_CAST(br_link);
+
+      if (br_link) {
+        // learn the source mac
+        bridge->learn_source_mac(br_link, p.pkt);
+      }
+    }
+
+    VLOG(2) << __FUNCTION__ << ": send pkt " << p.pkt
+            << " to kernel fd=" << p.fd;
+    // pass process packets to tap_man
+    tap_man->enqueue(p.fd, p.pkt);
+
+    _packet_in.pop_front();
   }
 
   if (_pc_back.size()) {
@@ -345,6 +406,18 @@ void cnetlink::nl_cb_v2(struct nl_cache *cache, struct nl_object *old_obj,
 void cnetlink::set_tapmanager(std::shared_ptr<tap_manager> tm) {
   tap_man = tm;
   l3->set_tapmanager(tm);
+}
+
+int cnetlink::send_nl_msg(nl_msg *msg) { return nl_send_auto(sock_tx, msg); }
+
+void cnetlink::learn_l2(uint32_t port_id, int fd, basebox::packet *pkt) {
+  {
+    std::lock_guard<std::mutex> scoped_lock(pi_mutex);
+    packet_in.emplace_back(port_id, fd, pkt);
+  }
+
+  VLOG(2) << __FUNCTION__ << ": got pkt " << pkt << " for fd=" << fd;
+  thread.wakeup();
 }
 
 void cnetlink::route_addr_apply(const nl_obj &obj) {
