@@ -292,13 +292,30 @@ void nl_bridge::add_neigh_to_fdb(rtnl_neigh *neigh) {
   nl_addr *mac = rtnl_neigh_get_lladdr(neigh);
   int vlan = rtnl_neigh_get_vlan(neigh);
 
+  bool permanent = true;
+
+  // for sure this is master (sw bridged)
+  if (rtnl_neigh_get_master(neigh) &&
+      !(rtnl_neigh_get_flags(neigh) & NTF_MASTER)) {
+    rtnl_neigh_set_flags(neigh, NTF_MASTER);
+  }
+
+  // check if entry already exists in cache
+  std::unique_ptr<rtnl_neigh, decltype(&rtnl_neigh_put)> n_lookup(
+      NEIGH_CAST(nl_cache_search(l2_cache, OBJ_CAST(neigh))), rtnl_neigh_put);
+  if (n_lookup) {
+    LOG(INFO) << __FUNCTION__ << ": found entry in local cache";
+    permanent = false;
+  }
+
   rofl::caddress_ll _mac((uint8_t *)nl_addr_get_binary_addr(mac),
                          nl_addr_get_len(mac));
 
   LOG(INFO) << __FUNCTION__ << ": add mac=" << _mac << " to bridge "
             << rtnl_link_get_name(bridge) << " on port=" << port
-            << " vlan=" << (unsigned)vlan;
-  sw->l2_addr_add(port, vlan, _mac, true);
+            << " vlan=" << (unsigned)vlan << ", permanent=" << permanent;
+  LOG(INFO) << __FUNCTION__ << ": object: " << OBJ_CAST(neigh);
+  sw->l2_addr_add(port, vlan, _mac, true, permanent);
 }
 
 void nl_bridge::remove_neigh_from_fdb(rtnl_neigh *neigh) {
@@ -357,12 +374,12 @@ int nl_bridge::learn_source_mac(rtnl_link *br_link, packet *p) {
   }
 
   // set nl neighbour to NL
-  std::unique_ptr<nl_addr, decltype(&nl_addr_put)> h_dst(
-      nl_addr_build(AF_BRIDGE, hdr->eth.h_source, sizeof(hdr->eth.h_source)),
+  std::unique_ptr<nl_addr, decltype(&nl_addr_put)> h_src(
+      nl_addr_build(AF_LLC, hdr->eth.h_source, sizeof(hdr->eth.h_source)),
       nl_addr_put);
 
-  if (!h_dst) {
-    LOG(ERROR) << __FUNCTION__ << ": failed to allocate dst mac";
+  if (!h_src) {
+    LOG(ERROR) << __FUNCTION__ << ": failed to allocate src mac";
     return -ENOMEM;
   }
 
@@ -373,8 +390,8 @@ int nl_bridge::learn_source_mac(rtnl_link *br_link, packet *p) {
   rtnl_neigh_set_master(n.get(), rtnl_link_get_master(br_link));
   rtnl_neigh_set_family(n.get(), AF_BRIDGE);
   rtnl_neigh_set_vlan(n.get(), vid);
-  rtnl_neigh_set_lladdr(n.get(), h_dst.get());
-  rtnl_neigh_set_flags(n.get(), NTF_MASTER | NTF_OFFLOADED | NTF_EXT_LEARNED);
+  rtnl_neigh_set_lladdr(n.get(), h_src.get());
+  rtnl_neigh_set_flags(n.get(), NTF_MASTER | NTF_EXT_LEARNED);
   rtnl_neigh_set_state(n.get(), NUD_REACHABLE);
 
   // check if entry already exists in cache

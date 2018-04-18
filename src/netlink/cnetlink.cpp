@@ -420,6 +420,14 @@ void cnetlink::learn_l2(uint32_t port_id, int fd, basebox::packet *pkt) {
   thread.wakeup();
 }
 
+void cnetlink::fdb_timeout(uint32_t port_id, uint16_t vid,
+                           const rofl::caddress_ll &mac) {
+  // XXX FIXME next
+  // * find entry in local l2_cache
+  // * maybe delete it here or after NL event
+  // * remove l2 entry from kernel
+}
+
 void cnetlink::route_addr_apply(const nl_obj &obj) {
   int family;
 

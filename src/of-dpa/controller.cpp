@@ -362,10 +362,10 @@ void controller::handle_bridging_table_rm(
     return;
   }
 
-  // TODO this has to be improved
-  // uint32_t portno = msg.get_cookie();
+  // TODO this has to be improved -> function in rofl-ofdpa
+  uint32_t port_no = msg.get_cookie() & 0xffffffff;
 
-  // XXX FIXME notify northbound about flow removal
+  nb->fdb_timeout(port_no, vid, eth_dst);
 }
 
 int controller::enqueue(uint32_t port_id, packet *pkt) noexcept {
@@ -462,14 +462,23 @@ int controller::l2_addr_remove_all_in_vlan(uint32_t port,
 }
 
 int controller::l2_addr_add(uint32_t port, uint16_t vid,
-                            const rofl::cmacaddr &mac, bool filtered) noexcept {
+                            const rofl::cmacaddr &mac, bool filtered,
+                            bool permanent) noexcept {
   int rv = 0;
   try {
     rofl::crofdpt &dpt = set_dpt(dptid, true);
+
+    if (!permanent)
+      fm_driver.set_idle_timeout(40);
+
     // XXX have the knowlege here about filtered/unfiltered?
     dpt.send_flow_mod_message(rofl::cauxid(0),
                               fm_driver.add_bridging_unicast_vlan(
                                   dpt.get_version(), port, vid, mac, filtered));
+
+    if (!permanent)
+      fm_driver.set_idle_timeout(default_idle_timeout);
+
   } catch (rofl::eRofBaseNotFound &e) {
     LOG(ERROR) << ": caught rofl::eRofBaseNotFound";
     rv = -EINVAL;

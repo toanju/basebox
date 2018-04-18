@@ -70,6 +70,8 @@ public:
 
   int send_nl_msg(nl_msg *msg);
   void learn_l2(uint32_t port_id, int fd, packet *pkt);
+  void fdb_timeout(uint32_t port_id, uint16_t vid,
+                   const rofl::caddress_ll &mac);
 
   void start() {
     if (running)

@@ -11,7 +11,7 @@ namespace basebox {
 class tap_io : public rofl::cthread_env {
 public:
   struct tap_io_details {
-    tap_io_details() : fd(-1), port_id(0), cb(nullptr), mtu(0) {}
+    tap_io_details() : fd(-1), port_id(0), cb(nullptr), mtu(1500) {}
     tap_io_details(int fd, uint32_t port_id, switch_callback *cb, unsigned mtu)
         : fd(fd), port_id(port_id), cb(cb), mtu(mtu) {}
     int fd;
