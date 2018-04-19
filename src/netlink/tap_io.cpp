@@ -79,6 +79,8 @@ void tap_io::update_mtu(int fd, unsigned mtu) {
     return;
   }
 
+  VLOG(4) << __FUNCTION__ << ": of fd=" << fd << ", mtu=" << mtu;
+
   sw_cbs[fd].mtu = mtu;
 }
 
@@ -94,6 +96,8 @@ void tap_io::handle_read_event(rofl::cthread &thread, int fd) {
   }
 
   size_t len = sizeof(std::size_t) + 22 + td->mtu;
+
+  VLOG(4) << __FUNCTION__ << ": read on fd=" << fd << ", max_len=" << len;
 
   packet *pkt = (packet *)std::malloc(len);
 
@@ -182,6 +186,8 @@ void tap_io::handle_events() {
 
     case TAP_IO_ADD:
       sw_cbs[fd] = ev.second;
+      VLOG(3) << __FUNCTION__ << ": register fd=" << fd
+              << ", mtu=" << ev.second.mtu << ", port_id=" << ev.second.port_id;
       thread.add_read_fd(fd, true, false);
       break;
     case TAP_IO_REM:

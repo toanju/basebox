@@ -60,7 +60,7 @@ int tap_manager::create_tapdev(uint32_t port_id, const std::string &port_name,
       }
 
       // start reading from port
-      tap_io::tap_io_details td(fd, port_id, &cb, 0);
+      tap_io::tap_io_details td(fd, port_id, &cb, 1500);
       io->register_tap(td);
     } catch (std::exception &e) {
       LOG(ERROR) << __FUNCTION__ << ": failed to create tapdev " << port_name;
