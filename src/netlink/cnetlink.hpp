@@ -70,6 +70,7 @@ public:
 
   int send_nl_msg(nl_msg *msg);
   void learn_l2(uint32_t port_id, int fd, packet *pkt);
+
   void fdb_timeout(uint32_t port_id, uint16_t vid,
                    const rofl::caddress_ll &mac);
 
@@ -116,8 +117,6 @@ private:
 
   std::shared_ptr<nl_l3> l3;
 
-  std::mutex pi_mutex;
-
   struct nl_pkt_in {
     nl_pkt_in(uint32_t port_id, int fd, packet *pkt)
         : port_id(port_id), fd(fd), pkt(pkt) {}
@@ -126,7 +125,23 @@ private:
     packet *pkt;
   };
 
+  std::mutex pi_mutex;
   std::deque<nl_pkt_in> packet_in;
+
+  struct fdb_ev {
+    fdb_ev(uint32_t port_id, uint16_t vid, const rofl::caddress_ll &mac)
+        : port_id(port_id), vid(vid), mac(mac) {}
+    uint32_t port_id;
+    uint16_t vid;
+    rofl::caddress_ll mac;
+  };
+
+  std::mutex fdb_ev_mutex;
+  std::deque<fdb_ev> fdb_evts;
+
+  int handle_port_status_events();
+  int handle_source_mac_learn();
+  int handle_fdb_timeout();
 
   void route_addr_apply(const nl_obj &obj);
   void route_link_apply(const nl_obj &obj);

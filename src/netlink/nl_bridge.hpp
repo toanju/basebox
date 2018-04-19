@@ -20,6 +20,10 @@ struct rtnl_neigh;
 struct nl_addr;
 }
 
+namespace rofl {
+class caddress_ll;
+}
+
 namespace basebox {
 
 class cnetlink;
@@ -44,6 +48,8 @@ public:
   void remove_neigh_from_fdb(rtnl_neigh *);
 
   int learn_source_mac(rtnl_link *br_link, packet *p);
+  int fdb_timeout(rtnl_link *br_link, uint16_t vid,
+                  const rofl::caddress_ll &mac);
 
 private:
   void update_vlans(rtnl_link *, rtnl_link *);

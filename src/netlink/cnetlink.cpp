@@ -230,118 +230,15 @@ void cnetlink::handle_wakeup(rofl::cthread &thread) {
     nl_objs.pop_front();
   }
 
-  std::deque<std::tuple<uint32_t, enum nbi::port_status, int>> _pc_changes;
-  std::deque<std::tuple<uint32_t, enum nbi::port_status, int>> _pc_back;
-
-  {
-    std::lock_guard<std::mutex> scoped_lock(pc_mutex);
-    _pc_changes.swap(port_status_changes);
+  if (handle_port_status_events()) {
+    do_wakeup = true;
   }
 
-  for (auto change : _pc_changes) {
-    int ifindex, rv;
-    rtnl_link *lchange, *link;
-
-    // get ifindex
-    ifindex = tap_man->get_ifindex(std::get<0>(change));
-    if (0 == ifindex) {
-      // XXX not yet registered push back, this should be done async
-      int n_retries = std::get<2>(change);
-      if (n_retries < 10) {
-        std::get<2>(change) = ++n_retries;
-        _pc_back.push_back(change);
-      } else {
-        LOG(ERROR) << __FUNCTION__
-                   << ": no ifindex of port_id=" << std::get<0>(change)
-                   << " found";
-      }
-      continue;
-    }
-
-    VLOG(1) << __FUNCTION__ << ": update link with ifindex=" << ifindex
-            << " port_id=" << std::get<0>(change) << " status=" << std::hex
-            << std::get<1>(change) << std::dec << ") ";
-
-    // lookup link
-    link = rtnl_link_get(caches[NL_LINK_CACHE], ifindex);
-    if (!link) {
-      LOG(ERROR) << __FUNCTION__ << ": link not found with ifindex=" << ifindex;
-      continue;
-    }
-
-    // change request
-    lchange = rtnl_link_alloc();
-    if (!lchange) {
-      LOG(ERROR) << __FUNCTION__ << ": out of memory";
-      rtnl_link_put(link);
-      continue;
-    }
-
-    int flags = rtnl_link_get_flags(link);
-    // check admin state change
-    if (!((flags & IFF_UP) &&
-          !(std::get<1>(change) & nbi::PORT_STATUS_ADMIN_DOWN))) {
-      if (std::get<1>(change) & nbi::PORT_STATUS_ADMIN_DOWN) {
-        rtnl_link_unset_flags(lchange, IFF_UP);
-        LOG(INFO) << __FUNCTION__ << ": " << rtnl_link_get_name(link)
-                  << " disabling";
-      } else {
-        rtnl_link_set_flags(lchange, IFF_UP);
-        LOG(INFO) << __FUNCTION__ << ": " << rtnl_link_get_name(link)
-                  << " enabling";
-      }
-    } else {
-      LOG(INFO) << __FUNCTION__ << ": notification of port "
-                << rtnl_link_get_name(link) << " received. State unchanged.";
-    }
-
-    // apply changes
-    if ((rv = rtnl_link_change(sock_mon, link, lchange, 0)) < 0) {
-      LOG(ERROR) << __FUNCTION__ << ": Unable to change link, "
-                 << nl_geterror(rv);
-    }
-    rtnl_link_put(link);
-    rtnl_link_put(lchange);
+  if (handle_source_mac_learn()) {
+    do_wakeup = true;
   }
 
-  // handle source mac learning
-  std::deque<nl_pkt_in> _packet_in;
-
-  {
-    std::lock_guard<std::mutex> scoped_lock(pi_mutex);
-    _packet_in.swap(packet_in);
-  }
-
-  for (int cnt = 0; cnt < nl_proc_max && _packet_in.size() && running; cnt++) {
-    auto p = _packet_in.front();
-    int ifindex = tap_man->get_ifindex(p.port_id);
-
-    VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex;
-
-    if (ifindex && bridge) {
-      rtnl_link *br_link = get_link(ifindex, AF_BRIDGE);
-      VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex
-              << ", bridge=" << bridge << ", br_link=" << OBJ_CAST(br_link);
-
-      if (br_link) {
-        // learn the source mac
-        bridge->learn_source_mac(br_link, p.pkt);
-      }
-    }
-
-    VLOG(2) << __FUNCTION__ << ": send pkt " << p.pkt
-            << " to kernel fd=" << p.fd;
-    // pass process packets to tap_man
-    tap_man->enqueue(p.fd, p.pkt);
-
-    _packet_in.pop_front();
-  }
-
-  if (_pc_back.size()) {
-    std::lock_guard<std::mutex> scoped_lock(pc_mutex);
-    std::copy(make_move_iterator(_pc_back.begin()),
-              make_move_iterator(_pc_back.end()),
-              std::back_inserter(port_status_changes));
+  if (handle_fdb_timeout()) {
     do_wakeup = true;
   }
 
@@ -420,12 +317,95 @@ void cnetlink::learn_l2(uint32_t port_id, int fd, basebox::packet *pkt) {
   thread.wakeup();
 }
 
+int cnetlink::handle_source_mac_learn() {
+  // handle source mac learning
+  std::deque<nl_pkt_in> _packet_in;
+
+  {
+    std::lock_guard<std::mutex> scoped_lock(pi_mutex);
+    _packet_in.swap(packet_in);
+  }
+
+  for (int cnt = 0; cnt < nl_proc_max && _packet_in.size() && running; cnt++) {
+    auto p = _packet_in.front();
+    int ifindex = tap_man->get_ifindex(p.port_id);
+
+    VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex;
+
+    if (ifindex && bridge) {
+      rtnl_link *br_link = get_link(ifindex, AF_BRIDGE);
+      VLOG(2) << __FUNCTION__ << ": ifindex=" << ifindex
+              << ", bridge=" << bridge << ", br_link=" << OBJ_CAST(br_link);
+
+      if (br_link) {
+        // learn the source mac
+        bridge->learn_source_mac(br_link, p.pkt);
+      }
+    }
+
+    VLOG(2) << __FUNCTION__ << ": send pkt " << p.pkt
+            << " to kernel fd=" << p.fd;
+    // pass process packets to tap_man
+    tap_man->enqueue(p.fd, p.pkt);
+
+    _packet_in.pop_front();
+  }
+
+  int size = _packet_in.size();
+  if (size) {
+    std::lock_guard<std::mutex> scoped_lock(pi_mutex);
+    std::copy(make_move_iterator(_packet_in.begin()),
+              make_move_iterator(packet_in.end()),
+              std::back_inserter(packet_in));
+  }
+
+  return size;
+}
+
 void cnetlink::fdb_timeout(uint32_t port_id, uint16_t vid,
                            const rofl::caddress_ll &mac) {
-  // XXX FIXME next
-  // * find entry in local l2_cache
-  // * maybe delete it here or after NL event
-  // * remove l2 entry from kernel
+  {
+    std::lock_guard<std::mutex> scoped_lock(fdb_ev_mutex);
+    fdb_evts.emplace_back(port_id, vid, mac);
+  }
+
+  VLOG(2) << __FUNCTION__ << ": got port_id=" << port_id << ", vid=" << vid
+          << ", mac=" << mac;
+
+  thread.wakeup();
+}
+
+int cnetlink::handle_fdb_timeout() {
+  std::deque<fdb_ev> _fdb_evts;
+
+  {
+    std::lock_guard<std::mutex> scoped_lock(fdb_ev_mutex);
+    _fdb_evts.swap(fdb_evts);
+  }
+
+  for (int cnt = 0; cnt < nl_proc_max && _fdb_evts.size() && bridge && running;
+       cnt++) {
+
+    auto fdbev = _fdb_evts.front();
+    int ifindex = tap_man->get_ifindex(fdbev.port_id);
+    rtnl_link *br_link = get_link(ifindex, AF_BRIDGE);
+
+    if (br_link) {
+      bridge->fdb_timeout(br_link, fdbev.vid, fdbev.mac);
+    }
+
+    _fdb_evts.pop_front();
+  }
+
+  int size = _fdb_evts.size();
+  if (size) {
+    std::lock_guard<std::mutex> scoped_lock(fdb_ev_mutex);
+    std::copy(make_move_iterator(_fdb_evts.begin()),
+              make_move_iterator(_fdb_evts.end()),
+              std::back_inserter(fdb_evts));
+  }
+
+  return size;
 }
 
 void cnetlink::route_addr_apply(const nl_obj &obj) {
@@ -938,6 +918,93 @@ void cnetlink::port_status_changed(uint32_t port_no,
     return;
   }
   thread.wakeup();
+}
+
+int cnetlink::handle_port_status_events() {
+
+  std::deque<std::tuple<uint32_t, enum nbi::port_status, int>> _pc_changes;
+  std::deque<std::tuple<uint32_t, enum nbi::port_status, int>> _pc_retry;
+
+  {
+    std::lock_guard<std::mutex> scoped_lock(pc_mutex);
+    _pc_changes.swap(port_status_changes);
+  }
+
+  for (auto change : _pc_changes) {
+    int ifindex, rv;
+    rtnl_link *lchange, *link;
+
+    // get ifindex
+    ifindex = tap_man->get_ifindex(std::get<0>(change));
+    if (0 == ifindex) {
+      // XXX not yet registered push back, this should be done async
+      int n_retries = std::get<2>(change);
+      if (n_retries < 10) {
+        std::get<2>(change) = ++n_retries;
+        _pc_retry.push_back(change);
+      } else {
+        LOG(ERROR) << __FUNCTION__
+                   << ": no ifindex of port_id=" << std::get<0>(change)
+                   << " found";
+      }
+      continue;
+    }
+
+    VLOG(1) << __FUNCTION__ << ": update link with ifindex=" << ifindex
+            << " port_id=" << std::get<0>(change) << " status=" << std::hex
+            << std::get<1>(change) << std::dec << ") ";
+
+    // lookup link
+    link = rtnl_link_get(caches[NL_LINK_CACHE], ifindex);
+    if (!link) {
+      LOG(ERROR) << __FUNCTION__ << ": link not found with ifindex=" << ifindex;
+      continue;
+    }
+
+    // change request
+    lchange = rtnl_link_alloc();
+    if (!lchange) {
+      LOG(ERROR) << __FUNCTION__ << ": out of memory";
+      rtnl_link_put(link);
+      continue;
+    }
+
+    int flags = rtnl_link_get_flags(link);
+    // check admin state change
+    if (!((flags & IFF_UP) &&
+          !(std::get<1>(change) & nbi::PORT_STATUS_ADMIN_DOWN))) {
+      if (std::get<1>(change) & nbi::PORT_STATUS_ADMIN_DOWN) {
+        rtnl_link_unset_flags(lchange, IFF_UP);
+        LOG(INFO) << __FUNCTION__ << ": " << rtnl_link_get_name(link)
+                  << " disabling";
+      } else {
+        rtnl_link_set_flags(lchange, IFF_UP);
+        LOG(INFO) << __FUNCTION__ << ": " << rtnl_link_get_name(link)
+                  << " enabling";
+      }
+    } else {
+      LOG(INFO) << __FUNCTION__ << ": notification of port "
+                << rtnl_link_get_name(link) << " received. State unchanged.";
+    }
+
+    // apply changes
+    if ((rv = rtnl_link_change(sock_mon, link, lchange, 0)) < 0) {
+      LOG(ERROR) << __FUNCTION__ << ": Unable to change link, "
+                 << nl_geterror(rv);
+    }
+    rtnl_link_put(link);
+    rtnl_link_put(lchange);
+  }
+
+  int size = _pc_retry.size();
+  if (size) {
+    std::lock_guard<std::mutex> scoped_lock(pc_mutex);
+    std::copy(make_move_iterator(_pc_retry.begin()),
+              make_move_iterator(_pc_retry.end()),
+              std::back_inserter(port_status_changes));
+  }
+
+  return size;
 }
 
 } // namespace basebox

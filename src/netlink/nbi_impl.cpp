@@ -69,8 +69,8 @@ int nbi_impl::enqueue(uint32_t port_id, basebox::packet *pkt) noexcept {
 
 int nbi_impl::fdb_timeout(uint32_t port_id, uint16_t vid,
                           const rofl::caddress_ll &mac) noexcept {
-  int rv = 0;
-  return rv;
+  nl->fdb_timeout(port_id, vid, mac);
+  return 0;
 }
 
 } // namespace basebox

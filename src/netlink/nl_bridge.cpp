@@ -427,4 +427,45 @@ int nl_bridge::learn_source_mac(rtnl_link *br_link, packet *p) {
   return 0;
 }
 
+int nl_bridge::fdb_timeout(rtnl_link *br_link, uint16_t vid,
+                           const rofl::caddress_ll &mac) {
+  int rv = 0;
+
+  std::unique_ptr<rtnl_neigh, decltype(&rtnl_neigh_put)> n(rtnl_neigh_alloc(),
+                                                           rtnl_neigh_put);
+
+  std::unique_ptr<nl_addr, decltype(&nl_addr_put)> h_src(
+      nl_addr_build(AF_LLC, mac.somem(), mac.memlen()), nl_addr_put);
+
+  rtnl_neigh_set_ifindex(n.get(), rtnl_link_get_ifindex(br_link));
+  rtnl_neigh_set_master(n.get(), rtnl_link_get_master(br_link));
+  rtnl_neigh_set_family(n.get(), AF_BRIDGE);
+  rtnl_neigh_set_vlan(n.get(), vid);
+  rtnl_neigh_set_lladdr(n.get(), h_src.get());
+  rtnl_neigh_set_flags(n.get(), NTF_MASTER | NTF_EXT_LEARNED);
+  rtnl_neigh_set_state(n.get(), NUD_REACHABLE);
+
+  // find entry in local l2_cache
+  std::unique_ptr<rtnl_neigh, decltype(&rtnl_neigh_put)> n_lookup(
+      NEIGH_CAST(nl_cache_search(l2_cache, OBJ_CAST(n.get()))), rtnl_neigh_put);
+
+  if (n_lookup) {
+    // * remove l2 entry from kernel
+    nl_msg *msg = nullptr;
+    rtnl_neigh_build_delete_request(n.get(), NLM_F_REQUEST, &msg);
+    assert(msg);
+
+    // send the message and create new fdb entry
+    if (nl->send_nl_msg(msg) < 0) {
+      LOG(ERROR) << __FUNCTION__ << ": failed to send netlink message";
+      return -EINVAL;
+    }
+
+    // XXX FIXME maybe delete after NL event and not yet here
+    nl_cache_remove(OBJ_CAST(n_lookup.get()));
+  }
+
+  return rv;
+}
+
 } /* namespace basebox */
