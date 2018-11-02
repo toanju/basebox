@@ -51,9 +51,10 @@ class controller : public rofl::crofbase,
 public:
   controller(nbi *nb,
              const rofl::openflow::cofhello_elem_versionbitmap &versionbitmap =
-                 rofl::openflow::cofhello_elem_versionbitmap())
+                 rofl::openflow::cofhello_elem_versionbitmap(),
+             bool purge_on_first_connect = false)
       : nb(nb), bb_thread(1), egress_interface_id(1), default_idle_timeout(0),
-        connected(false) {
+        connected(false), purge_on_first_connect(purge_on_first_connect) {
     nb->register_switch(this);
     rofl::crofbase::set_versionbitmap(versionbitmap);
     bb_thread.start();
@@ -220,6 +221,7 @@ private:
   std::set<uint32_t> freed_egress_interfaces_ids;
   uint16_t default_idle_timeout;
   bool connected;
+  bool purge_on_first_connect;
 
   enum timer_t {
     /* handle_timeout will be called as well from crofbase, hence we need some

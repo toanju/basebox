@@ -14,6 +14,7 @@
 
 DECLARE_string(tryfromenv); // from gflags
 DEFINE_int32(port, 6653, "Listening port");
+DEFINE_bool(purge, false, "Purge switch configuration");
 
 static bool validate_port(const char *flagname, gflags::int32 value) {
   VLOG(3) << __FUNCTION__ << ": flagname=" << flagname << ", value=" << value;
@@ -33,7 +34,7 @@ int main(int argc, char **argv) {
   }
 
   // all variables can be set from env
-  FLAGS_tryfromenv = std::string("port");
+  FLAGS_tryfromenv = std::string("port,purge");
   gflags::SetUsageMessage("");
   gflags::SetVersionString(PROJECT_VERSION);
 
@@ -47,7 +48,8 @@ int main(int argc, char **argv) {
             << ": using OpenFlow version-bitmap: " << versionbitmap;
 
   nbi_impl *nbi = new nbi_impl();
-  std::shared_ptr<controller> box(new controller(nbi, versionbitmap));
+  std::shared_ptr<controller> box(
+      new controller(nbi, versionbitmap, FLAGS_purge));
 
   rofl::csockaddr baddr(AF_INET, std::string("0.0.0.0"), FLAGS_port);
   box->dpt_sock_listen(baddr);

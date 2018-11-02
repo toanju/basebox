@@ -39,6 +39,16 @@ void controller::handle_dpt_open(rofl::crofdpt &dpt) {
   // set max queue size in rofl
   dpt.set_conn(rofl::cauxid(0)).set_txqueue_max_size(128 * 1024);
 
+  if (purge_on_first_connect) {
+    LOG(INFO) << __FUNCTION__ << ": purge switch state";
+
+    // XXX delete flow mods
+
+    // delete group mods
+
+    // delete tunnels
+  }
+
   dpt.send_features_request(rofl::cauxid(0));
   dpt.send_desc_stats_request(rofl::cauxid(0), 0);
   dpt.send_port_desc_stats_request(rofl::cauxid(0), 0);

@@ -2,6 +2,9 @@
 #
 # Listening port:
 # FLAGS_port=6653
+#
+# Purge switch on first connect:
+# FLAGS_purge=false
 
 ### glog
 #
