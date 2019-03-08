@@ -819,22 +819,15 @@ static auto lookup_endpoint(rtnl_link *vxlan_link, nl_addr *local_,
   }
 
   auto ep = endpoint_port(local_ipv4, remote_ipv4, initiator_udp_dst_port);
-  auto ep_it = endpoint_id.equal_range(ep);
+  auto range_it = endpoint_id.equal_range(ep);
 
-  if (ep_it.first == endpoint_id.end()) {
-    VLOG(1) << __FUNCTION__
-            << ": endpoint not found having the following parameter local addr "
-            << local_ << ", remote addr " << remote_ << ", on link "
-            << OBJ_CAST(vxlan_link);
-    return endpoint_id.end();
-  }
-
-  for (; ep_it.first != ep_it.second; ++ep_it.first) {
-    if (ep_it.first->first == ep) {
+  auto it = range_it.first;
+  for (; it != range_it.second; ++it) {
+    if (it->first == ep) {
       VLOG(1) << __FUNCTION__ << ": found an endpoint_port lport_id="
-              << ep_it.first->second.lport_id;
+              << range_it.first->second.lport_id;
 
-      return ep_it.first;
+      return it;
     }
   }
 
